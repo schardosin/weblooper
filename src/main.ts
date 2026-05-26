@@ -301,7 +301,7 @@ class WebLooper {
 
         <!-- Hero -->
         <section class="relative min-h-[620px] flex items-center justify-center overflow-hidden border-b border-white/10">
-          <div class="absolute inset-0 hero-bg" style="background-image: url('/brand/hero.jpg')"></div>
+          <div class="absolute inset-0 hero-bg" style="background-image: url('${import.meta.env.BASE_URL}brand/hero.jpg')"></div>
           <div class="absolute inset-0 bg-gradient-to-b from-black/60 via-black/70 to-[#0a0a0b]"></div>
 
           <div class="relative max-w-[820px] px-6 text-center">
@@ -351,7 +351,7 @@ class WebLooper {
           <div class="grid md:grid-cols-3 gap-6">
             <!-- Feature 1 -->
             <div class="premium-card group bg-zinc-900 border border-white/10 rounded-3xl overflow-hidden">
-              <div class="feature-img h-56" style="background-image: url('/brand/looping.jpg')"></div>
+              <div class="feature-img h-56" style="background-image: url('${import.meta.env.BASE_URL}brand/looping.jpg')"></div>
               <div class="p-8">
                 <div class="font-semibold text-xl tracking-tight">Precision Looping</div>
                 <div class="text-zinc-400 mt-3 leading-relaxed">Drag handles, keyboard shortcuts, saved presets. Loop exactly what you need — nothing more, nothing less.</div>
@@ -360,7 +360,7 @@ class WebLooper {
 
             <!-- Feature 2 -->
             <div class="premium-card group bg-zinc-900 border border-white/10 rounded-3xl overflow-hidden">
-              <div class="feature-img h-56" style="background-image: url('/brand/stems.jpg')"></div>
+              <div class="feature-img h-56" style="background-image: url('${import.meta.env.BASE_URL}brand/stems.jpg')"></div>
               <div class="p-8">
                 <div class="font-semibold text-xl tracking-tight">AI Stem Separation</div>
                 <div class="text-zinc-400 mt-3 leading-relaxed">6-stem separation (drums, bass, guitar, piano, vocals, other) runs 100% in your browser using WebGPU. No uploads. No recurring cost.</div>
@@ -439,7 +439,7 @@ class WebLooper {
               </div>
             </div>
             <div class="rounded-3xl overflow-hidden border border-white/10">
-              <img src="/brand/stems.jpg" class="w-full" alt="AI stem separation visualization">
+              <img src="${import.meta.env.BASE_URL}brand/stems.jpg" class="w-full" alt="AI stem separation visualization">
             </div>
           </div>
         </section>

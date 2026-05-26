@@ -96,6 +96,23 @@ You can also drag the green timeline handles for precise visual control.
 
 ---
 
+## Live Site & Deployment
+
+The site is automatically built and deployed via GitHub Actions on every push to `main`.
+
+**Live site:** [https://schardosin.github.io/weblooper/](https://schardosin.github.io/weblooper/)
+
+### One-time setup required
+
+The first time (or if Pages was previously set to "Deploy from a branch"), you must:
+
+1. Go to the repository **Settings → Pages**
+2. Under **"Build and deployment" → Source**, select **GitHub Actions**
+
+After this single manual step, the workflow in `.github/workflows/deploy.yml` will handle all future deployments automatically.
+
+---
+
 ## Philosophy
 
 weblooper exists for one reason: help musicians practice the hard parts.

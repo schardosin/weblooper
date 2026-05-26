@@ -39,13 +39,15 @@ jobs:
 
       - name: Setup Pages
         uses: actions/configure-pages@v4
-        with:
-          # Try to automatically enable GitHub Pages with Actions source if not already configured
-          enablement: true
+        # Note: Do NOT use enablement: true here.
+        # It often fails with "Resource not accessible by integration".
+        # The user must manually set Source → GitHub Actions once in repo Settings > Pages.
+        # After that one-time step, this workflow will deploy successfully on every push.
 
       - name: Upload build artifact
         uses: actions/upload-pages-artifact@v3
         with:
+          # The dist folder produced by Vite
           path: ./dist
 
   deploy:

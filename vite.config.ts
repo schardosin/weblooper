@@ -1,7 +1,13 @@
 import { defineConfig } from 'vite'
 import tailwindcss from '@tailwindcss/vite'
 
+// When deploying to GitHub Pages (schardosin.github.io/weblooper),
+// Vite must know the correct base path so assets load from /weblooper/ instead of /
+const isGitHubPages = process.env.GITHUB_PAGES === 'true'
+
 export default defineConfig({
+  base: isGitHubPages ? '/weblooper/' : '/',
+
   plugins: [
     tailwindcss(),
 

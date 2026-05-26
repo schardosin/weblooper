@@ -1,28 +1,25 @@
 # weblooper
 
-**A focused YouTube looper for musicians.**
+**The beautiful, focused practice tool for musicians.**
 
-Set precise start and end points on any YouTube video, loop it, slow it down, and save your favorite practice sections.
+Loop any part of a song with pixel-perfect precision. Separate stems with AI that runs entirely in your browser. Save your work and come back anytime — everything stays on your device.
 
-Built for deliberate practice — guitar solos, vocal runs, drum fills, piano passages, language listening, etc.
+![Hero](public/brand/hero.jpg)
 
-## Features (YouTube)
+---
 
-- **Precise loop region** — click or drag handles on the timeline, or use the `[` / `]` keys
-- **Live visual timeline** with playhead and highlighted loop region
-- **Playback speed control** — 0.5×, 0.75×, 1×, 1.25×, 1.5×, 2×
-- **Fine nudging** — adjust start/end by 0.5s (or edit the time fields directly)
-- **Saved loops / presets** — name sections ("Verse 2", "Bridge solo", "Slow chorus") and jump between them instantly
-- **Keyboard-first** — space, brackets, L, R, arrows, number keys for speed
-- **Remembers everything** — per-video loop points + presets are saved in your browser
+## What makes weblooper special
 
-## Planned
+- **Precision looping** — Drag timeline handles or use `[` and `]` keys. Save as many presets as you want.
+- **AI stem separation** — Full 6-stem separation (drums, bass, **guitar**, **piano**, vocals, other) runs locally using WebGPU. No uploads. No monthly fees.
+- **YouTube + local files** — Paste any YouTube link or load a local audio file. Works the same way.
+- **Decoupled stems** — When you separate stems from a YouTube video they become first-class sessions (exactly like local audio). No weird syncing, no video relationship.
+- **Recent videos & previous stems** — Jump straight back into anything you were working on. All your loops and stem sessions are saved locally.
+- **Beautiful, calm interface** — Designed for long practice sessions. No ads, no accounts, no distractions.
 
-- **Browser-powered stem separation** (full 6-stem only: drums, bass, **guitar**, **piano**, vocals, other) — **exclusive engine is demucs-rs** (Rust + WebGPU/WASM). 4-stem support has been fully removed. See `src/stems/` and [docs/stem-separation.md](docs/stem-separation.md).
-- Spotify support (and other platforms)
-- Count-in / metronome overlay
-- Export / share loop links
-- Offline / PWA install
+![Stem Separation](public/brand/stems.jpg)
+
+---
 
 ## Getting started
 
@@ -31,57 +28,92 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:5173, paste any YouTube URL (or video ID), and start looping.
+Open http://localhost:5173.
 
-### Recommended workflow for practice
+### Quick start (YouTube)
 
-1. Load the song
-2. Play the section you want to practice
-3. Hit `[` at the start of the phrase
-4. Hit `]` at the end of the phrase
-5. Hit `L` to turn looping on
-6. Slow it down to 0.75× or 0.5× using the speed chips or `1`–`6` keys
-7. Hit `R` anytime to restart the phrase cleanly
-8. Save it with a name so you can come back tomorrow
+1. Paste a YouTube link and hit **LOAD**
+2. Drag the timeline or press `[` and `]` to set your loop
+3. Press `L` to turn looping on
+4. Use the speed chips or keys `1`–`6` to slow it down
+5. (Optional) Click **Separate Stems** — a clean 6-stem model runs locally
+
+### Quick start (local audio + stems)
+
+1. Click **Load local audio file (for stems)**
+2. Choose a WAV, MP3, FLAC, etc.
+3. Click **Separate Stems** (first run downloads ~84 MB model)
+4. Once stems are ready you get the full practice workspace with independent timeline, loop handles, mixer, and speed control
+
+![Looping](public/brand/looping.jpg)
+
+---
+
+## Browser requirements
+
+**For normal looping** — Any modern browser works fine.
+
+**For stem separation** (the powerful part):
+- **Strongly recommended**: Chrome or Edge (best WebGPU support)
+- Firefox works but is usually slower
+- Safari is often unreliable or very slow
+
+**For YouTube stem separation**:
+- Requires a Chromium-based browser (Chrome, Edge, Brave, etc.)
+- Uses the tab audio capture API (`getDisplayMedia` + `preferCurrentTab`)
+
+The first stem separation will download a large model (~84 MB). After that everything is local.
+
+---
 
 ## Keyboard shortcuts
 
-| Key       | Action                        |
-|-----------|-------------------------------|
-| `Space`   | Play / Pause                  |
-| `[`       | Set loop **start** here       |
-| `]`       | Set loop **end** here         |
-| `L`       | Toggle looping                |
-| `R`       | Restart from loop start       |
-| `1`–`6`   | Change speed (0.5× → 2×)      |
-| `←` / `→` | Seek ±1 second                |
-| `?`       | Show shortcuts                |
-| `Esc`     | Close dialogs                 |
+| Key       | Action                              |
+|-----------|-------------------------------------|
+| `Space`   | Play / Pause                        |
+| `[`       | Set loop **start** at current time  |
+| `]`       | Set loop **end** at current time    |
+| `L`       | Toggle looping                      |
+| `R`       | Restart from the beginning of the loop |
+| `1`–`6`   | Change playback speed (0.5× → 2×)   |
+| `←` / `→` | Nudge playhead by 1 second          |
+| `?`       | Show shortcuts modal                |
+| `Esc`     | Close modals                        |
 
-You can also drag the green handles directly on the timeline for visual precision.
+You can also drag the green timeline handles for precise visual control.
+
+---
 
 ## Tech
 
 - Vite + TypeScript + Tailwind CSS v4
-- YouTube IFrame Player API (no backend, no data collection)
-- All state lives in `localStorage` (per video)
+- YouTube IFrame Player API (no backend, no tracking)
+- 6-stem separation via **demucs-rs** (Rust + WebGPU/WASM) — fully client-side
+- All state lives in `localStorage` + OPFS (Origin Private File System) for stems
+- Tab audio capture for YouTube stem separation (no server required)
+
+---
+
+## Philosophy
+
+weblooper exists for one reason: help musicians practice the hard parts.
+
+- No accounts
+- No tracking
+- No bullshit
+- Everything runs locally when possible
+- The interface should feel calm and precise, even during long sessions
+
+---
 
 ## Deploy
 
-This is a pure static site. Deploy anywhere Vite works:
+Pure static site. Works anywhere:
 
-- **Vercel**: `vercel`
-- **Netlify**: drag `dist/` or connect repo
-- **GitHub Pages**: `npm run build` + push `dist` (or use a workflow)
+- Vercel / Netlify / Cloudflare Pages (just point at the repo)
+- GitHub Pages (`npm run build` then push `dist`)
 
-## Contributing / Philosophy
-
-The goal is to stay extremely focused:
-
-- One job: help musicians loop specific musical phrases perfectly
-- Minimal UI chrome
-- Keyboard and precision first
-- No accounts, no tracking, no bullshit
+---
 
 ## License
 
@@ -89,4 +121,4 @@ MIT — do whatever you want with it.
 
 ---
 
-Made with ❤️ for people who practice the hard parts.
+Made with focus for people who actually practice the hard parts.

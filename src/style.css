@@ -1,0 +1,398 @@
+@import "tailwindcss";
+
+/* ============================================
+   weblooper — Premium Musician Practice Tool
+   Brand: Focused. Intimate. Cinematic. Professional.
+   ============================================ */
+
+:root {
+  --accent: #10b981;           /* emerald-500 */
+  --accent-dark: #059669;
+  --accent-2: #f59e0b;         /* warm amber for "practice" moments (presets, saved) */
+  --bg-0: #0a0a0b;             /* near-black */
+  --bg-1: #111113;
+  --bg-2: #18181b;
+  --text-muted: #a1a1aa;
+  --loop-bg: rgba(16, 185, 129, 0.15);
+  --loop-border: rgba(16, 185, 129, 0.5);
+}
+
+/* Global polish */
+body {
+  font-feature-settings: "tnum", "ss01";
+}
+
+/* Beautiful glass / elevated cards used in new landing */
+.glass {
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.08);
+  backdrop-filter: blur(12px);
+}
+
+.premium-card {
+  transition: transform 0.2s cubic-bezier(0.23, 1, 0.32, 1), 
+              box-shadow 0.2s cubic-bezier(0.23, 1, 0.32, 1),
+              border-color 0.2s ease;
+}
+
+.premium-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1);
+  border-color: rgba(255,255,255,0.12);
+}
+
+/* Hero with background image treatment */
+.hero-bg {
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+
+/* Elegant section dividers */
+.section-divider {
+  height: 1px;
+  background: linear-gradient(to right, transparent, rgba(255,255,255,0.08), transparent);
+}
+
+/* Improved focus rings for the whole app */
+button:focus-visible,
+input:focus-visible,
+a:focus-visible {
+  outline: 2px solid #10b981;
+  outline-offset: 2px;
+}
+
+/* Premium landing navigation */
+.nav-link {
+  position: relative;
+  padding-bottom: 2px;
+  transition: color 0.15s ease;
+}
+.nav-link:after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 0;
+  height: 1px;
+  background: #10b981;
+  transition: width 0.2s cubic-bezier(0.23, 1, 0.32, 1);
+}
+.nav-link:hover:after,
+.nav-link.active:after {
+  width: 100%;
+}
+
+/* Hero overlay text */
+.hero-title {
+  text-shadow: 0 2px 4px rgba(0,0,0,0.6);
+}
+
+/* Feature image container */
+.feature-img {
+  background-size: cover;
+  background-position: center;
+  transition: transform 0.4s cubic-bezier(0.23, 1, 0.32, 1);
+}
+.premium-card:hover .feature-img {
+  transform: scale(1.04);
+}
+
+/* Workspace frame — makes the existing powerful tool feel premium */
+.workspace-frame {
+  background: #0a0a0b;
+  border: 1px solid rgba(255,255,255,0.08);
+  box-shadow: 0 25px 50px -12px rgb(0 0 0 / 0.4);
+}
+
+/* Existing styles below (kept intact for the functional tool) */
+
+body {
+  font-feature-settings: "tnum";
+}
+
+/* Nice focus rings */
+button:focus-visible,
+input:focus-visible,
+[role="button"]:focus-visible {
+  outline: 2px solid #10b981;
+  outline-offset: 2px;
+}
+
+/* Time inputs */
+.time-input {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  background-color: #09090b;
+  border: 1px solid #27272a;
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  width: 82px;
+  text-align: center;
+  transition: border-color 0.1s ease;
+}
+
+.time-input:focus {
+  border-color: #10b981;
+  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.1);
+  outline: none;
+}
+
+/* Speed chips */
+.speed-chip {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: #18181b;
+  border: 1px solid #27272a;
+  color: #a1a1aa;
+  transition: all 0.1s ease;
+  cursor: pointer;
+  user-select: none;
+}
+
+.speed-chip:hover {
+  border-color: #3f3f46;
+  color: #e4e4e7;
+}
+
+.speed-chip.active {
+  background: #10b981;
+  border-color: #10b981;
+  color: #052e16;
+  font-weight: 700;
+}
+
+/* Timeline */
+.timeline {
+  position: relative;
+  height: 36px;
+  background: #18181b;
+  border-radius: 999px;
+  border: 1px solid #27272a;
+  cursor: pointer;
+  user-select: none;
+  touch-action: none;
+}
+
+.timeline-track {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.timeline-loop {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: var(--loop-bg);
+  border-left: 2px solid var(--accent);
+  border-right: 2px solid var(--accent);
+  pointer-events: none;
+  z-index: 1;
+}
+
+.timeline-playhead {
+  position: absolute;
+  top: 50%;
+  width: 3px;
+  height: 28px;
+  background: #f4f4f5;
+  border-radius: 3px;
+  transform: translate(-50%, -50%);
+  z-index: 3;
+  pointer-events: none;
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.6);
+}
+
+.timeline-playhead::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 11px;
+  height: 11px;
+  background: #10b981;
+  border: 2px solid #052e16;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 4;
+}
+
+.timeline-handle {
+  position: absolute;
+  top: 50%;
+  width: 18px;
+  height: 18px;
+  background: #10b981;
+  border: 3px solid #052e16;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 5;
+  cursor: ew-resize;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.4);
+  transition: transform 0.1s ease, box-shadow 0.1s ease;
+}
+
+.timeline-handle:hover {
+  transform: translate(-50%, -50%) scale(1.1);
+  box-shadow: 0 4px 8px rgba(0,0,0,0.5);
+}
+
+.timeline-handle.start {
+  border-color: #052e16;
+}
+
+.timeline-handle.end {
+  border-color: #052e16;
+}
+
+.timeline-time-labels {
+  display: flex;
+  justify-content: space-between;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 11px;
+  color: #52525b;
+  margin-top: 6px;
+  padding: 0 2px;
+}
+
+/* Preset items */
+.preset-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: #18181b;
+  border: 1px solid #27272a;
+  border-radius: 10px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.1s ease;
+}
+
+.preset-item:hover {
+  border-color: #3f3f46;
+  background: #27272a;
+}
+
+.preset-item.active {
+  border-color: #10b981;
+  background: rgba(16, 185, 129, 0.08);
+}
+
+.preset-name {
+  font-weight: 500;
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.preset-time {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 11px;
+  color: #71717a;
+  margin-left: 10px;
+  white-space: nowrap;
+}
+
+.preset-actions {
+  display: flex;
+  gap: 2px;
+  margin-left: 8px;
+  opacity: 0.6;
+}
+
+.preset-item:hover .preset-actions {
+  opacity: 1;
+}
+
+/* Player wrapper polish */
+#player-wrap {
+  box-shadow: 0 25px 50px -12px rgb(0 0 0 / 0.4);
+}
+
+/* Status / loading states */
+.loading {
+  animation: pulse 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .4; }
+}
+
+/* Small utility */
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+/* Nudge buttons */
+.nudge-btn {
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: #27272a;
+  border: 1px solid #3f3f46;
+  color: #a1a1aa;
+  font-weight: 600;
+  transition: all 0.1s;
+}
+
+.nudge-btn:hover {
+  background: #3f3f46;
+  color: #e4e4e7;
+}
+
+/* Stem mixer fader */
+.stem-fader {
+  accent-color: #10b981;
+  height: 4px;
+  background: #27272a;
+  border-radius: 999px;
+}
+
+.stem-fader::-webkit-slider-thumb {
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  background: #10b981;
+  border: 2px solid #052e16;
+  border-radius: 999px;
+  cursor: pointer;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.4);
+}
+
+.stem-fader::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  background: #10b981;
+  border: 2px solid #052e16;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+/* Big action buttons */
+.btn-primary {
+  background: #10b981;
+  color: #052e16;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+}
+
+.btn-primary:hover {
+  background: #34d399;
+}
+
+.btn-primary:disabled {
+  background: #166534;
+  color: #4ade80;
+  cursor: not-allowed;
+}

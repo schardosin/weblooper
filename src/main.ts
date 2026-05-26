@@ -173,8 +173,10 @@ class WebLooper {
   private presets: LoopPreset[] = []
   private monitorInterval: number | null = null
   private lastKnownTime = 0
+  private currentView: 'landing' | 'workspace' = 'landing'
+  private pendingVideoUrl: string | null = null
 
-  // UI elements (set after render)
+  // UI elements (set after render — only valid in workspace view)
   private els!: {
     loaderSection: HTMLElement
     playerSection: HTMLElement
@@ -208,19 +210,71 @@ class WebLooper {
   }
 
   constructor() {
-    this.render()
+    this.route()
     this.bindGlobalEvents()
-    this.initYouTubeAPI()
-    this.setupPremiumNavigation()
+    window.addEventListener('hashchange', () => this.route())
   }
 
-  // Smooth scroll navigation + Launch Workspace button for the new beautiful landing
-  private setupPremiumNavigation() {
-    // Smooth scroll for nav links
-    document.querySelectorAll('a[href^="#"]').forEach((anchor) => {
+  // ---------- Router ----------
+  private route() {
+    const hash = location.hash
+    if (hash === '#/workspace' || hash.startsWith('#/workspace?')) {
+      this.navigateToWorkspace()
+    } else {
+      this.navigateToLanding()
+    }
+  }
+
+  private navigateToWorkspace() {
+    if (this.currentView === 'workspace') return
+    this.currentView = 'workspace'
+    this.renderWorkspace()
+    this.initYouTubeAPI()
+    // If we have a pending URL from the landing page hero input, load it
+    if (this.pendingVideoUrl) {
+      const url = this.pendingVideoUrl
+      this.pendingVideoUrl = null
+      this.els.urlInput.value = url
+      this.loadFromInput()
+    }
+  }
+
+  private navigateToLanding() {
+    if (this.currentView === 'landing') {
+      this.renderLanding()
+      return
+    }
+    this.currentView = 'landing'
+    // Clean up player if active
+    this.stopTimeMonitor()
+    if (this.player) {
+      try { this.player.destroy() } catch {}
+      this.player = null
+      this.playerReady = false
+    }
+    this.renderLanding()
+  }
+
+  navigateTo(view: 'landing' | 'workspace', options?: { videoUrl?: string }) {
+    if (options?.videoUrl) {
+      this.pendingVideoUrl = options.videoUrl
+    }
+    if (view === 'workspace') {
+      location.hash = '#/workspace'
+    } else {
+      // Remove hash without adding '#' to URL
+      history.pushState(null, '', location.pathname + location.search)
+      this.route()
+    }
+  }
+
+  // Smooth scroll navigation for landing page sections
+  private setupLandingNavigation() {
+    // Smooth scroll for in-page anchor links (features, how, stems)
+    document.querySelectorAll('a.nav-link[href^="#"]').forEach((anchor) => {
       anchor.addEventListener('click', (e) => {
         const href = (anchor as HTMLAnchorElement).getAttribute('href')
-        if (!href || href === '#') return
+        if (!href || href === '#' || href === '#/workspace') return
         const target = document.querySelector(href)
         if (target) {
           e.preventDefault()
@@ -229,37 +283,44 @@ class WebLooper {
       })
     })
 
-    // "Open Workspace" CTA in header scrolls to the functional area.
-    // We explicitly target the input inside the workspace and prevent the browser
-    // from auto-scrolling on focus so we don't jump back to the top.
+    // "Open Workspace" CTA navigates to the workspace view
     const launchBtn = document.getElementById('launch-workspace-btn')
     launchBtn?.addEventListener('click', () => {
-      const workspace = document.getElementById('workspace')
-      if (workspace) {
-        workspace.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      this.navigateTo('workspace')
+    })
 
-        // Give the smooth scroll time to settle, then focus without letting
-        // the browser scroll the focused element (which would jump us back up).
-        setTimeout(() => {
-          const input = document.querySelector('#loader-section #url-input') as HTMLInputElement | null
-          if (input) {
-            input.focus({ preventScroll: true })
-            input.select()
-          }
-        }, 900)
+    // Hero "START LOOPING" button: grab the URL and navigate to workspace with it
+    const heroLoadBtn = document.getElementById('hero-load-btn')
+    const heroInput = document.getElementById('hero-url-input') as HTMLInputElement | null
+    heroLoadBtn?.addEventListener('click', () => {
+      const url = heroInput?.value.trim() || ''
+      this.navigateTo('workspace', { videoUrl: url || undefined })
+    })
+    heroInput?.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') {
+        const url = heroInput.value.trim()
+        this.navigateTo('workspace', { videoUrl: url || undefined })
       }
+    })
+
+    // Hero example links
+    document.querySelectorAll('.hero-example-link').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const url = (btn as HTMLElement).dataset.url!
+        this.navigateTo('workspace', { videoUrl: url })
+      })
     })
   }
 
   // ---------- Rendering ----------
-  private render() {
+  // ---------- Landing Page View ----------
+  private renderLanding() {
     const app = document.querySelector<HTMLDivElement>('#app')!
     app.innerHTML = `
       <div class="min-h-screen flex flex-col bg-[#0a0a0b] text-zinc-200">
-        <!-- Premium Sticky Header — ultra-stable, zero movement -->
+        <!-- Landing Header -->
         <header class="border-b border-white/10 bg-[#0a0a0b]/95 backdrop-blur-xl sticky top-0 z-[200]">
-          <div class="max-w-[1280px] mx-auto px-6 h-16 flex items-center">
-            <!-- Logo (never moves) -->
+          <div class="max-w-[1280px] mx-auto px-6 h-16 flex items-center flex-nowrap overflow-hidden">
             <div class="flex-none flex items-center gap-3">
               <div class="flex items-center gap-3">
                 <div class="w-9 h-9 rounded-2xl bg-emerald-500 flex items-center justify-center shadow-lg shadow-emerald-500/20">
@@ -277,20 +338,13 @@ class WebLooper {
               </div>
             </div>
 
-            <!-- Navigation (centered, shrinks gracefully, hidden on mobile) -->
-            <nav class="hidden md:flex flex-1 items-center justify-center gap-8 text-sm font-medium">
-              <a href="#features" class="nav-link text-zinc-400 hover:text-white transition">Features</a>
-              <a href="#how" class="nav-link text-zinc-400 hover:text-white transition">How it works</a>
-              <a href="#stems" class="nav-link text-zinc-400 hover:text-white transition">Stems</a>
-              <a href="#workspace" class="nav-link text-zinc-400 hover:text-white transition">Workspace</a>
+            <nav class="hidden md:flex flex-1 items-center justify-center gap-6 text-sm font-medium min-w-0">
+              <a href="#features" class="nav-link text-zinc-400 hover:text-white transition whitespace-nowrap">Features</a>
+              <a href="#how" class="nav-link text-zinc-400 hover:text-white transition whitespace-nowrap">How it works</a>
+              <a href="#stems" class="nav-link text-zinc-400 hover:text-white transition whitespace-nowrap">Stems</a>
             </nav>
 
-            <!-- Right actions (always pinned to the right, never moves) -->
-            <div class="flex-none flex items-center gap-3">
-              <button id="shortcuts-btn"
-                      class="hidden md:flex items-center gap-2 px-4 py-1.5 text-xs rounded-full border border-white/10 hover:bg-white/5 transition whitespace-nowrap">
-                <span>⌨︎ Shortcuts</span>
-              </button>
+            <div class="flex-none flex items-center gap-3 flex-shrink-0">
               <button id="launch-workspace-btn"
                       class="px-5 py-2 text-sm rounded-full bg-white text-zinc-950 font-semibold active:scale-[0.985] transition flex items-center gap-2 whitespace-nowrap">
                 Open Workspace
@@ -309,7 +363,6 @@ class WebLooper {
               BUILT FOR SERIOUS PRACTICE
             </div>
 
-            <!-- Strong local protection for the headline (works even if image has busy areas) -->
             <div class="relative inline-block px-10 py-5 rounded-3xl bg-black/65 backdrop-blur-lg border border-white/10">
               <h1 class="text-6xl md:text-7xl font-semibold tracking-[-3.5px] leading-[0.95]">
                 Loop any part.<br>Practice perfectly.
@@ -321,21 +374,21 @@ class WebLooper {
 
             <div class="mt-10 max-w-[620px] mx-auto">
               <div class="bg-zinc-900/90 border border-white/10 rounded-3xl p-2 flex gap-2 shadow-2xl">
-                <input id="url-input"
+                <input id="hero-url-input"
                        type="text"
                        placeholder="Paste YouTube link or video ID"
                        class="flex-1 bg-black text-lg px-6 py-4 rounded-2xl border border-white/10 focus:border-emerald-500/60 focus:outline-none placeholder:text-zinc-600" />
-                <button id="load-btn"
+                <button id="hero-load-btn"
                         class="btn-primary px-8 text-base rounded-2xl font-semibold active:scale-[0.985] transition whitespace-nowrap">
                   START LOOPING
                 </button>
               </div>
               <div class="flex items-center justify-center gap-4 mt-4 text-xs">
-                <button class="example-link text-emerald-400/80 hover:text-emerald-400 transition" data-url="https://youtu.be/3JZ_2t3oX8s">Guitar riff</button>
+                <button class="hero-example-link text-emerald-400/80 hover:text-emerald-400 transition" data-url="https://youtu.be/3JZ_2t3oX8s">Guitar riff</button>
                 <span class="text-white/20">•</span>
-                <button class="example-link text-emerald-400/80 hover:text-emerald-400 transition" data-url="https://www.youtube.com/watch?v=9bZkp7q19f0">Gangnam Style</button>
+                <button class="hero-example-link text-emerald-400/80 hover:text-emerald-400 transition" data-url="https://www.youtube.com/watch?v=9bZkp7q19f0">Gangnam Style</button>
                 <span class="text-white/20">•</span>
-                <button class="example-link text-emerald-400/80 hover:text-emerald-400 transition" data-url="https://youtu.be/dQw4w9wgccc">Never Gonna</button>
+                <button class="hero-example-link text-emerald-400/80 hover:text-emerald-400 transition" data-url="https://youtu.be/dQw4w9wgccc">Never Gonna</button>
               </div>
             </div>
           </div>
@@ -349,7 +402,6 @@ class WebLooper {
           </div>
 
           <div class="grid md:grid-cols-3 gap-6">
-            <!-- Feature 1 -->
             <div class="premium-card group bg-zinc-900 border border-white/10 rounded-3xl overflow-hidden">
               <div class="feature-img h-56" style="background-image: url('${import.meta.env.BASE_URL}brand/looping.jpg')"></div>
               <div class="p-8">
@@ -358,7 +410,6 @@ class WebLooper {
               </div>
             </div>
 
-            <!-- Feature 2 -->
             <div class="premium-card group bg-zinc-900 border border-white/10 rounded-3xl overflow-hidden">
               <div class="feature-img h-56" style="background-image: url('${import.meta.env.BASE_URL}brand/stems.jpg')"></div>
               <div class="p-8">
@@ -367,7 +418,6 @@ class WebLooper {
               </div>
             </div>
 
-            <!-- Feature 3 -->
             <div class="premium-card group bg-zinc-900 border border-white/10 rounded-3xl overflow-hidden flex flex-col">
               <div class="p-8 flex-1">
                 <div class="font-semibold text-xl tracking-tight">Practice with Stems</div>
@@ -444,25 +494,64 @@ class WebLooper {
           </div>
         </section>
 
-        <!-- The actual Workspace (existing powerful tool) -->
-        <section id="workspace" class="border-t border-white/10 bg-zinc-950">
-          <div class="max-w-[1280px] mx-auto px-6 pt-12 pb-8">
-            <div class="flex items-end justify-between mb-6">
-              <div>
-                <div class="text-emerald-400 text-xs tracking-[3px]">THE TOOL</div>
-                <div class="text-3xl font-semibold tracking-tighter">Your Practice Workspace</div>
-              </div>
-              <div class="text-xs text-zinc-500 max-w-[260px] text-right hidden md:block">
-                Everything below is saved locally. Close the tab, come back tomorrow — your loops and stems are still here.
+        <footer class="border-t border-white/10 py-8 text-center text-xs text-zinc-500">
+          Made with focus for musicians who practice seriously.<br>
+          Everything stays on your device. No accounts. No limits.
+        </footer>
+      </div>
+    `
+
+    this.setupLandingNavigation()
+  }
+
+  // ---------- Workspace View (Full-Screen Dedicated) ----------
+  private renderWorkspace() {
+    const app = document.querySelector<HTMLDivElement>('#app')!
+    app.innerHTML = `
+      <div class="min-h-screen flex flex-col bg-[#0a0a0b] text-zinc-200">
+        <!-- Workspace Header — minimal, focused -->
+        <header class="border-b border-white/10 bg-[#0a0a0b]/95 backdrop-blur-xl sticky top-0 z-[200]">
+          <div class="max-w-[1280px] mx-auto px-6 h-14 flex items-center justify-between">
+            <!-- Left: Back + Logo -->
+            <div class="flex items-center gap-4">
+              <button id="workspace-back-btn"
+                      class="flex items-center gap-2 text-sm text-zinc-400 hover:text-white transition">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M19 12H5M12 19l-7-7 7-7"/>
+                </svg>
+                <span class="hidden sm:inline">Home</span>
+              </button>
+              <div class="h-5 w-px bg-white/10"></div>
+              <div class="flex items-center gap-2">
+                <div class="w-7 h-7 rounded-xl bg-emerald-500 flex items-center justify-center">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#052e16" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M17 2l4 4-4 4"/>
+                    <path d="M3 11v-1a4 4 0 014-4h14"/>
+                    <path d="M7 22l-4-4 4-4"/>
+                    <path d="M21 13v1a4 4 0 01-4 4H3"/>
+                  </svg>
+                </div>
+                <span class="font-semibold tracking-tight text-lg">Workspace</span>
               </div>
             </div>
-          </div>
 
-          <!-- Original functional content (kept intact for perfect compatibility) -->
-          <div class="max-w-[1280px] mx-auto px-6 pb-16">
-            <!-- Loader / URL Input (existing) -->
+            <!-- Right: Shortcuts + status -->
+            <div class="flex items-center gap-3">
+              <div class="hidden md:block text-[10px] text-zinc-500">Saved locally</div>
+              <button id="shortcuts-btn"
+                      class="flex items-center gap-2 px-3 py-1.5 text-xs rounded-full border border-white/10 hover:bg-white/5 transition whitespace-nowrap">
+                <span>Shortcuts</span>
+              </button>
+            </div>
+          </div>
+        </header>
+
+        <!-- Workspace Content -->
+        <main class="flex-1 flex flex-col">
+          <div class="flex-1 max-w-[1280px] w-full mx-auto px-6 py-8">
+            <!-- Loader / URL Input -->
             <div id="loader-section" class="max-w-[720px] mx-auto">
-              <div class="text-center mb-6">
+              <div class="text-center mb-8">
                 <h1 class="text-4xl font-semibold tracking-tighter">Loop any part.<br>Practice perfectly.</h1>
                 <p class="text-zinc-400 mt-3">Paste a YouTube link. Set your start &amp; end points. Loop it.</p>
               </div>
@@ -514,7 +603,7 @@ class WebLooper {
               </div>
             </div>
 
-            <!-- Main Player UI (existing, kept 100% intact) -->
+            <!-- Main Player UI -->
             <div id="player-section" class="hidden max-w-[1100px] mx-auto mt-8">
               <!-- Video header -->
               <div class="flex items-start justify-between gap-4 mb-3">
@@ -527,8 +616,8 @@ class WebLooper {
                 </div>
                 <button id="change-video-btn"
                         class="shrink-0 mt-1 text-sm flex items-center gap-2 px-4 py-2 rounded-2xl bg-zinc-900 hover:bg-zinc-800 border border-white/10 active:bg-zinc-950 transition">
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M3 12a9 9 0 0118 0"/><path d="M21 12l-3-3m3 3l-3 3"/></svg>
-                  <span>Change video</span>
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+                  <span>Back</span>
                 </button>
 
                 <button id="separate-stems-from-yt"
@@ -640,15 +729,10 @@ class WebLooper {
               </div>
             </div>
           </div>
-        </section>
-
-        <footer class="border-t border-white/10 py-8 text-center text-xs text-zinc-500">
-          Made with focus for musicians who practice seriously.<br>
-          Everything stays on your device. No accounts. No limits.
-        </footer>
+        </main>
       </div>
 
-      <!-- Shortcuts modal (kept) -->
+      <!-- Shortcuts modal -->
       <div id="shortcuts-modal" class="hidden fixed inset-0 bg-black/70 backdrop-blur z-[300] flex items-center justify-center p-6">
         <div class="bg-zinc-900 border border-white/10 rounded-3xl w-full max-w-md p-6 text-sm">
           <div class="flex justify-between items-center mb-4">
@@ -670,7 +754,7 @@ class WebLooper {
       </div>
     `
 
-    // Cache elements
+    // Cache workspace elements
     this.els = {
       loaderSection: document.getElementById('loader-section')!,
       playerSection: document.getElementById('player-section')!,
@@ -706,8 +790,18 @@ class WebLooper {
     // Hide the stems button until a video is loaded
     this.els.separateStemsFromYtBtn.classList.add('hidden')
 
+    // Wire workspace back button
+    document.getElementById('workspace-back-btn')?.addEventListener('click', () => {
+      this.navigateTo('landing')
+    })
+
     this.attachUIListeners()
     this.renderSpeedChips()
+
+    // Focus the URL input when workspace loads
+    setTimeout(() => {
+      this.els.urlInput.focus({ preventScroll: true })
+    }, 100)
   }
 
   private attachUIListeners() {
@@ -2433,7 +2527,6 @@ class WebLooper {
     decoded: { fileName: string; duration: number },
     realStems: Array<{ name: string; buffer: AudioBuffer }>
   ) {
-    // Reuse most of the previous demo UI code, but feed real stems into StemPlayer
     const stemArea = document.createElement('div')
     stemArea.id = 'stem-practice-area'
     stemArea.className = 'max-w-[1100px] mx-auto'
@@ -2444,70 +2537,189 @@ class WebLooper {
     const { StemPlayer } = await import('./stems')
     const stemPlayer = new StemPlayer()
     stemPlayer.loadStems(stemTracks)
-    // Default: full track, looping disabled (user can set custom loop region)
-    stemPlayer.setLoop(0, decoded.duration)
-    stemPlayer.setIsLooping(false)
 
-    // Rich UI with proper loop controls (matching YouTube looper behavior)
+    // ---------- Persistence ----------
+    // Key for saving loop state + presets for this specific stem session
+    // Simple hash to create a safe localStorage key from any filename (including Unicode)
+    let hash = 0
+    for (let i = 0; i < decoded.fileName.length; i++) {
+      hash = ((hash << 5) - hash + decoded.fileName.charCodeAt(i)) | 0
+    }
+    const storageKey = 'weblooper_stem_state_' + Math.abs(hash).toString(36)
+
+    interface StemLoopState {
+      start: number
+      end: number
+      isLooping: boolean
+      playbackRate: number
+      presets: LoopPreset[]
+    }
+
+    function loadStemState(): StemLoopState | null {
+      try {
+        const raw = localStorage.getItem(storageKey)
+        return raw ? JSON.parse(raw) : null
+      } catch { return null }
+    }
+
+    function saveStemState(state: StemLoopState) {
+      try { localStorage.setItem(storageKey, JSON.stringify(state)) } catch {}
+    }
+
+    // Restore saved state or defaults
+    const savedState = loadStemState()
+    let loopStart = savedState?.start ?? 0
+    let loopEnd = savedState?.end ?? decoded.duration
+    let isLooping = savedState?.isLooping ?? false
+    let currentRate = savedState?.playbackRate ?? 1
+    let presets: LoopPreset[] = savedState?.presets ?? []
+
+    stemPlayer.setLoop(loopStart, loopEnd)
+    stemPlayer.setIsLooping(isLooping)
+    stemPlayer.setPlaybackRate(currentRate)
+
+    function persistStemState() {
+      saveStemState({ start: loopStart, end: loopEnd, isLooping, playbackRate: currentRate, presets })
+    }
+
+    // ---------- UI ----------
     stemArea.innerHTML = `
-      <div class="mb-3 flex items-center justify-between">
-        <div>
-          <div class="text-emerald-400 text-xs tracking-[1.5px] font-semibold">STEM PRACTICE — REAL AI SEPARATION (6 stems)</div>
-          <div class="text-2xl font-semibold tracking-tight truncate max-w-[600px]">${decoded.fileName}</div>
+      <div class="mb-3 flex items-start justify-between gap-4">
+        <div class="min-w-0 flex-1">
+          <div class="text-emerald-400 text-xs tracking-[1.5px] font-semibold">STEM PRACTICE</div>
+          <div class="text-2xl font-semibold tracking-tight truncate">${decoded.fileName}</div>
+          <div class="flex items-center gap-2 text-sm text-zinc-500 mt-0.5">
+            <span class="tabular-nums">${formatTime(decoded.duration)}</span>
+            <span>•</span>
+            <span>${realStems.length} stems</span>
+          </div>
         </div>
-        <button id="exit-stem-real" class="text-sm px-4 py-2 rounded-2xl border border-white/10 hover:bg-zinc-900">Exit</button>
+        <button id="exit-stem-real"
+                class="shrink-0 mt-1 text-sm flex items-center gap-2 px-4 py-2 rounded-2xl bg-zinc-900 hover:bg-zinc-800 border border-white/10 active:bg-zinc-950 transition">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+          <span>Back</span>
+        </button>
       </div>
 
       <div class="grid grid-cols-1 lg:grid-cols-[1fr,320px] gap-6">
+        <!-- Left: Mixer + Timeline -->
         <div>
+          <!-- Stem Mixer -->
+          <div id="real-mixer-container" class="mb-4"></div>
+
           <!-- Timeline with draggable loop handles -->
           <div id="stem-timeline-real" class="timeline w-full"></div>
-          <div class="flex justify-between text-xs text-zinc-500 mt-1 px-1 font-mono tabular-nums">
-            <div id="stem-loop-start-label">0:00</div>
-            <div id="stem-time-current-real" class="text-emerald-400 font-medium">0:00</div>
-            <div>${formatTime(decoded.duration)}</div>
+          <div id="stem-timeline-labels" class="timeline-time-labels">
+            <div id="stem-timeline-start-label">0:00</div>
+            <div id="stem-time-current-real" class="font-medium text-emerald-400">0:00</div>
+            <div id="stem-timeline-end-label">${formatTime(decoded.duration)}</div>
           </div>
 
-          <!-- Transport + Loop controls (same philosophy as YouTube path) -->
-          <div class="flex flex-wrap gap-2 mt-3">
-            <button id="stem-play-real" class="flex-1 min-w-[90px] py-3 rounded-2xl bg-white text-zinc-950 font-semibold">PLAY</button>
-            <button id="stem-restart-real" class="px-4 py-3 rounded-2xl bg-zinc-800 hover:bg-zinc-700 font-semibold border border-white/10">↺ Restart</button>
+          <div class="flex items-center justify-between mt-3 text-sm">
+            <div class="flex gap-2">
+              <button id="stem-set-start-real" class="nudge-btn flex items-center gap-1.5 px-3 py-1.5 text-emerald-400 hover:text-emerald-300">
+                <span class="font-semibold">SET START</span>
+                <span class="text-[10px] opacity-60">( [ )</span>
+              </button>
+              <button id="stem-set-end-real" class="nudge-btn flex items-center gap-1.5 px-3 py-1.5 text-rose-400 hover:text-rose-300">
+                <span class="font-semibold">SET END</span>
+                <span class="text-[10px] opacity-60">( ] )</span>
+              </button>
+            </div>
+            <div class="text-xs text-zinc-500">Click timeline to seek • Drag handles to adjust loop</div>
+          </div>
+        </div>
 
-            <button id="stem-loop-toggle-real"
-                    class="px-4 py-3 rounded-2xl border text-sm font-bold transition bg-emerald-500/10 border-emerald-500/40 text-emerald-400">LOOP OFF</button>
+        <!-- Right: Controls Sidebar (mirrors video view) -->
+        <div class="space-y-4">
+          <div class="bg-zinc-900 border border-white/10 rounded-3xl p-5">
+            <div class="flex items-center justify-between mb-4">
+              <div class="uppercase tracking-[1.5px] text-xs font-semibold text-emerald-400">Loop Region</div>
+              <button id="stem-loop-toggle-real"
+                      class="px-5 py-1 text-xs font-bold rounded-full border transition active:scale-95 bg-emerald-500/10 border-emerald-500/40 text-emerald-400">
+                LOOP OFF
+              </button>
+            </div>
 
-            <button id="stem-set-start-real" class="px-3 py-3 rounded-2xl border border-white/10 hover:bg-white/5 text-emerald-400 font-mono text-sm" title="Set loop start at current time ( [ )">[ Set Start</button>
-            <button id="stem-set-end-real" class="px-3 py-3 rounded-2xl border border-white/10 hover:bg-white/5 text-rose-400 font-mono text-sm" title="Set loop end at current time ( ] )">] Set End</button>
+            <div class="grid grid-cols-2 gap-3">
+              <div>
+                <div class="text-[10px] font-medium text-emerald-400 mb-1.5 tracking-widest">START</div>
+                <div class="flex items-center gap-2">
+                  <input id="stem-start-input" type="text" class="time-input" value="${formatTime(loopStart)}" />
+                  <button id="stem-nudge-start-minus" class="nudge-btn px-2 py-1 text-xs">-0.5</button>
+                  <button id="stem-nudge-start-plus" class="nudge-btn px-2 py-1 text-xs">+0.5</button>
+                </div>
+              </div>
+              <div>
+                <div class="text-[10px] font-medium text-rose-400 mb-1.5 tracking-widest">END</div>
+                <div class="flex items-center gap-2">
+                  <input id="stem-end-input" type="text" class="time-input" value="${formatTime(loopEnd)}" />
+                  <button id="stem-nudge-end-minus" class="nudge-btn px-2 py-1 text-xs">-0.5</button>
+                  <button id="stem-nudge-end-plus" class="nudge-btn px-2 py-1 text-xs">+0.5</button>
+                </div>
+              </div>
+            </div>
 
-            <button id="stem-full-track-real" class="px-3 py-3 rounded-2xl border border-white/10 hover:bg-white/5 text-xs text-zinc-400">Full track (no loop)</button>
+            <div class="mt-5 mb-1 text-center">
+              <div class="text-[10px] tracking-[2px] text-zinc-500">CURRENT TIME</div>
+              <div id="stem-current-time" class="font-mono text-5xl font-semibold tabular-nums tracking-tighter text-white mt-1">0:00</div>
+            </div>
+
+            <div class="grid grid-cols-2 gap-2 mt-2">
+              <button id="stem-play-real" class="col-span-1 py-3 rounded-2xl bg-white text-zinc-950 font-semibold active:scale-[0.985] flex items-center justify-center gap-2">
+                <span id="stem-play-label">PLAY</span>
+              </button>
+              <button id="stem-restart-real" class="py-3 rounded-2xl bg-zinc-800 hover:bg-zinc-700 font-semibold flex items-center justify-center gap-2 border border-white/10">
+                <span>↺</span><span>Restart Loop</span>
+              </button>
+            </div>
+
+            <button id="stem-full-track-real" class="mt-2 w-full py-2 text-xs rounded-2xl bg-zinc-950 hover:bg-zinc-800 border border-white/10 text-zinc-400 hover:text-zinc-200 transition flex items-center justify-center gap-2">
+              <span>Use full track (no loop)</span>
+            </button>
+
+            <div class="mt-5">
+              <div class="flex items-baseline justify-between mb-2 px-0.5">
+                <div class="text-xs font-medium tracking-widest text-zinc-400">SPEED</div>
+                <div id="stem-speed-real" class="font-mono text-sm text-emerald-400">${currentRate.toFixed(2)}×</div>
+              </div>
+              <div id="stem-speed-real-chips" class="flex flex-wrap gap-1.5"></div>
+            </div>
           </div>
 
-          <div class="mt-1 text-[10px] text-zinc-500">Click timeline to seek • Drag green handles to adjust loop region • [ ] L R keys also work</div>
+          <div class="bg-zinc-900 border border-white/10 rounded-3xl p-5">
+            <div class="flex items-center justify-between mb-3">
+              <div class="text-xs font-semibold tracking-widest text-zinc-400">SAVED LOOPS</div>
+              <button id="stem-save-preset-btn" class="text-[11px] px-3 py-1 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 font-medium flex items-center gap-1 transition">
+                <span>+</span><span>Save current</span>
+              </button>
+            </div>
+            <div id="stem-presets-list" class="space-y-1.5 max-h-[168px] overflow-auto pr-1 text-sm"></div>
+            <div id="stem-no-presets-hint" class="text-center text-xs text-zinc-500 py-2 italic hidden">No saved sections yet.<br>Save loops for fast switching.</div>
+          </div>
         </div>
-
-        <div id="real-mixer-container"></div>
-      </div>
-
-      <div class="mt-6">
-        <div class="flex items-center gap-2 text-xs text-zinc-400 mb-2">
-          <span class="tracking-widest">SPEED</span>
-          <span id="stem-speed-real" class="font-mono text-emerald-400">1.00×</span>
-        </div>
-        <div id="stem-speed-real-chips" class="flex flex-wrap gap-1.5"></div>
       </div>
     `
 
+    // ---------- Element refs ----------
     const timeline = document.getElementById('stem-timeline-real')!
     const timeEl = document.getElementById('stem-time-current-real')!
+    const currentTimeDisplay = document.getElementById('stem-current-time')!
     const playBtn = document.getElementById('stem-play-real')!
+    const playLabel = document.getElementById('stem-play-label')!
     const restartBtn = document.getElementById('stem-restart-real')!
     const loopToggleBtn = document.getElementById('stem-loop-toggle-real')!
     const setStartBtn = document.getElementById('stem-set-start-real')!
     const setEndBtn = document.getElementById('stem-set-end-real')!
     const fullTrackBtn = document.getElementById('stem-full-track-real')!
-    const loopStartLabel = document.getElementById('stem-loop-start-label')!
+    const startInput = document.getElementById('stem-start-input') as HTMLInputElement
+    const endInput = document.getElementById('stem-end-input') as HTMLInputElement
+    const timelineStartLabel = document.getElementById('stem-timeline-start-label')!
+    const presetsListEl = document.getElementById('stem-presets-list')!
+    const noPresetsHint = document.getElementById('stem-no-presets-hint')!
+    const savePresetBtn = document.getElementById('stem-save-preset-btn')!
 
-    // Build timeline with handles (same structure as main player)
+    // Build timeline with handles
     timeline.innerHTML = `
       <div class="timeline-track"></div>
       <div class="timeline-loop" id="real-loop-region"></div>
@@ -2516,28 +2728,16 @@ class WebLooper {
       <div class="timeline-handle end" id="real-handle-end" title="Drag to set loop end"></div>
     `
 
-    // Local loop state (mirrors StemPlayer + allows UI to drive it)
-    let loopStart = 0
-    let loopEnd = decoded.duration
-    let isLooping = false
-
-    function applyLoopToPlayer() {
-      stemPlayer.setLoop(loopStart, loopEnd)
-      stemPlayer.setIsLooping(isLooping)
-      updateLoopUI()
-    }
-
+    // ---------- Loop UI ----------
     function updateLoopUI() {
-      // Toggle button style
       if (isLooping) {
         loopToggleBtn.textContent = 'LOOP ON'
-        loopToggleBtn.className = 'px-4 py-3 rounded-2xl border text-sm font-bold transition bg-emerald-500 text-emerald-950 border-emerald-400'
+        loopToggleBtn.className = 'px-5 py-1 text-xs font-bold rounded-full border transition active:scale-95 bg-emerald-500 text-emerald-950 border-emerald-400'
       } else {
         loopToggleBtn.textContent = 'LOOP OFF'
-        loopToggleBtn.className = 'px-4 py-3 rounded-2xl border text-sm font-bold transition bg-emerald-500/10 border-emerald-500/40 text-emerald-400'
+        loopToggleBtn.className = 'px-5 py-1 text-xs font-bold rounded-full border transition active:scale-95 bg-emerald-500/10 border-emerald-500/40 text-emerald-400'
       }
 
-      // Loop region + handles visual
       const region = document.getElementById('real-loop-region') as HTMLElement
       const hStart = document.getElementById('real-handle-start') as HTMLElement
       const hEnd = document.getElementById('real-handle-end') as HTMLElement
@@ -2549,31 +2749,119 @@ class WebLooper {
 
         region.style.left = `${left}%`
         region.style.width = `${width}%`
-
         hStart.style.left = `${left}%`
         hEnd.style.left = `${pct(loopEnd)}%`
       }
 
-      loopStartLabel.textContent = formatTime(loopStart, true)
+      startInput.value = formatTime(loopStart)
+      endInput.value = formatTime(loopEnd)
+      timelineStartLabel.textContent = formatTime(loopStart)
     }
 
-    // Initial full track (no loop)
-    applyLoopToPlayer()
+    function applyLoopToPlayer() {
+      stemPlayer.setLoop(loopStart, loopEnd)
+      stemPlayer.setIsLooping(isLooping)
+      updateLoopUI()
+      persistStemState()
+    }
 
-    // Timeline click = seek (clamp to loop if looping)
+    // ---------- Presets ----------
+    function renderStemPresets() {
+      presetsListEl.innerHTML = ''
+
+      if (presets.length === 0) {
+        noPresetsHint.classList.remove('hidden')
+        return
+      }
+      noPresetsHint.classList.add('hidden')
+
+      presets.forEach((preset, index) => {
+        const isActive = Math.abs(preset.start - loopStart) < 0.3 && Math.abs(preset.end - loopEnd) < 0.3
+        const el = document.createElement('div')
+        el.className = `preset-item ${isActive ? 'active' : ''}`
+        el.innerHTML = `
+          <div class="flex-1 min-w-0">
+            <div class="preset-name">${preset.name}</div>
+            <div class="preset-time">${formatTime(preset.start)} — ${formatTime(preset.end)}</div>
+          </div>
+          <div class="preset-actions">
+            <button data-action="load" class="px-2 py-1 text-emerald-400 hover:text-emerald-300" title="Load this loop">→</button>
+            <button data-action="delete" class="px-1.5 py-1 text-rose-400/70 hover:text-rose-400" title="Delete">×</button>
+          </div>
+        `
+
+        el.addEventListener('click', (ev) => {
+          if ((ev.target as HTMLElement).closest('button')) return
+          loadStemPreset(preset)
+        })
+
+        el.querySelector('[data-action="load"]')?.addEventListener('click', (e) => {
+          e.stopPropagation()
+          loadStemPreset(preset)
+        })
+
+        el.querySelector('[data-action="delete"]')?.addEventListener('click', (e) => {
+          e.stopPropagation()
+          if (confirm(`Delete "${preset.name}"?`)) {
+            presets.splice(index, 1)
+            renderStemPresets()
+            persistStemState()
+          }
+        })
+
+        presetsListEl.appendChild(el)
+      })
+    }
+
+    function loadStemPreset(preset: LoopPreset) {
+      loopStart = preset.start
+      loopEnd = preset.end
+      applyLoopToPlayer()
+      stemPlayer.seek(loopStart)
+      if (isLooping) {
+        stemPlayer.play()
+      }
+      renderStemPresets()
+    }
+
+    function saveStemPreset() {
+      const defaultName = `Loop ${formatTime(loopStart)}–${formatTime(loopEnd)}`
+      const name = prompt('Name this loop section:', defaultName)
+      if (!name) return
+
+      const newPreset: LoopPreset = {
+        id: generateId(),
+        name: name.trim(),
+        start: loopStart,
+        end: loopEnd,
+      }
+
+      // Deduplicate (same range ±0.2s)
+      presets = presets.filter(p =>
+        !(Math.abs(p.start - newPreset.start) < 0.2 && Math.abs(p.end - newPreset.end) < 0.2)
+      )
+      presets.unshift(newPreset)
+      renderStemPresets()
+      persistStemState()
+    }
+
+    // ---------- Initial UI state ----------
+    updateLoopUI()
+    renderStemPresets()
+
+    // ---------- Timeline interaction ----------
     timeline.addEventListener('click', (e) => {
       const rect = timeline.getBoundingClientRect()
       let pct = (e.clientX - rect.left) / rect.width
       pct = Math.max(0, Math.min(1, pct))
       let seekTo = pct * decoded.duration
-
       if (isLooping) {
         seekTo = Math.max(loopStart, Math.min(seekTo, loopEnd))
       }
       stemPlayer.seek(seekTo)
     })
 
-    // Draggable loop handles (adapted from main player)
+    // Draggable loop handles
     let dragging: 'start' | 'end' | null = null
 
     const onPointerMove = (ev: PointerEvent) => {
@@ -2625,9 +2913,11 @@ class WebLooper {
       ev.preventDefault()
     })
 
-    // Transport buttons
+    // ---------- Transport ----------
     playBtn.addEventListener('click', () => stemPlayer.togglePlayPause())
-    restartBtn.addEventListener('click', () => stemPlayer.restartFromLoopStart())
+    restartBtn.addEventListener('click', () => {
+      stemPlayer.restartFromLoopStart()
+    })
 
     loopToggleBtn.addEventListener('click', () => {
       isLooping = !isLooping
@@ -2635,7 +2925,6 @@ class WebLooper {
     })
 
     setStartBtn.addEventListener('click', () => {
-      // Use current playback position
       const cur = (window as any).__currentStemTime || loopStart
       loopStart = Math.max(0, Math.min(cur, loopEnd - 0.2))
       applyLoopToPlayer()
@@ -2652,72 +2941,103 @@ class WebLooper {
       loopEnd = decoded.duration
       isLooping = false
       applyLoopToPlayer()
-      // Also seek to 0 so user immediately hears from the top of the full track
       stemPlayer.seek(0)
     })
 
-    // Speed chips
+    // Nudge buttons
+    document.getElementById('stem-nudge-start-minus')!.addEventListener('click', () => {
+      loopStart = Math.max(0, loopStart - 0.5)
+      applyLoopToPlayer()
+    })
+    document.getElementById('stem-nudge-start-plus')!.addEventListener('click', () => {
+      loopStart = Math.min(loopEnd - 0.2, loopStart + 0.5)
+      applyLoopToPlayer()
+    })
+    document.getElementById('stem-nudge-end-minus')!.addEventListener('click', () => {
+      loopEnd = Math.max(loopStart + 0.2, loopEnd - 0.5)
+      applyLoopToPlayer()
+    })
+    document.getElementById('stem-nudge-end-plus')!.addEventListener('click', () => {
+      loopEnd = Math.min(decoded.duration, loopEnd + 0.5)
+      applyLoopToPlayer()
+    })
+
+    // Time inputs (manual entry)
+    startInput.addEventListener('change', () => {
+      const val = parseTime(startInput.value)
+      loopStart = clamp(val, 0, loopEnd - 0.1)
+      applyLoopToPlayer()
+    })
+    endInput.addEventListener('change', () => {
+      const val = parseTime(endInput.value)
+      loopEnd = clamp(val, loopStart + 0.1, decoded.duration)
+      applyLoopToPlayer()
+    })
+
+    // Save preset
+    savePresetBtn.addEventListener('click', () => saveStemPreset())
+
+    // ---------- Speed ----------
     const speedChips = document.getElementById('stem-speed-real-chips')!
     const speedLabel = document.getElementById('stem-speed-real')!
+
+    function updateSpeed() {
+      currentRate = stemPlayer.getCurrentPlaybackRate()
+      speedLabel.textContent = currentRate.toFixed(2) + '×'
+      speedChips.querySelectorAll('button').forEach(btn => {
+        const v = parseFloat(btn.textContent!.replace('×', ''))
+        btn.classList.toggle('active', Math.abs(v - currentRate) < 0.01)
+      })
+      persistStemState()
+    }
+
     ;[0.5, 0.75, 1, 1.25, 1.5, 2].forEach(s => {
       const b = document.createElement('button')
-      b.className = `speed-chip ${s === 1 ? 'active' : ''}`
+      b.className = `speed-chip ${Math.abs(s - currentRate) < 0.01 ? 'active' : ''}`
       b.textContent = s + '×'
       b.onclick = () => { stemPlayer.setPlaybackRate(s); updateSpeed() }
       speedChips.appendChild(b)
     })
 
-    function updateSpeed() {
-      const r = stemPlayer.getCurrentPlaybackRate()
-      speedLabel.textContent = r.toFixed(2) + '×'
-      speedChips.querySelectorAll('button').forEach(btn => {
-        const v = parseFloat(btn.textContent!.replace('×',''))
-        btn.classList.toggle('active', Math.abs(v - r) < 0.01)
-      })
-    }
-
-    // Mixer
+    // ---------- Mixer ----------
     const mixerC = document.getElementById('real-mixer-container')!
     const { createStemMixerUI } = await import('./stems')
     createStemMixerUI({ container: mixerC, player: stemPlayer })
 
-    // Listen to StemPlayer for time + transport state
+    // ---------- StemPlayer events ----------
     const unsub = stemPlayer.on((ev) => {
       if (ev.type === 'time') {
         const t = ev.time
-        ;(window as any).__currentStemTime = t   // for [Set Start/End] buttons
+        ;(window as any).__currentStemTime = t
         timeEl.textContent = formatTime(t, true)
+        currentTimeDisplay.textContent = formatTime(t, true)
 
         const ph = document.getElementById('real-playhead') as HTMLElement
         if (ph) ph.style.left = `${(t / decoded.duration) * 100}%`
 
-        // Keep loop region + handles in sync (in case player wrapped inside loop)
+        // Keep loop region + handles in sync
         const region = document.getElementById('real-loop-region') as HTMLElement
-        const hStart = document.getElementById('real-handle-start') as HTMLElement
-        const hEnd = document.getElementById('real-handle-end') as HTMLElement
-        if (region && hStart && hEnd) {
+        const hS = document.getElementById('real-handle-start') as HTMLElement
+        const hE = document.getElementById('real-handle-end') as HTMLElement
+        if (region && hS && hE) {
           const pct = (x: number) => Math.max(0, Math.min(100, (x / decoded.duration) * 100))
           const left = pct(loopStart)
           const w = Math.max(pct(loopEnd) - left, 0.6)
           region.style.left = `${left}%`
           region.style.width = `${w}%`
-          hStart.style.left = `${left}%`
-          hEnd.style.left = `${pct(loopEnd)}%`
+          hS.style.left = `${left}%`
+          hE.style.left = `${pct(loopEnd)}%`
         }
       }
 
       if (ev.type === 'play' || ev.type === 'pause') {
-        playBtn.textContent = stemPlayer.isCurrentlyPlaying() ? 'PAUSE' : 'PLAY'
-      }
-
-      if (ev.type === 'loop-jump') {
-        // visual pop if desired
+        playLabel.textContent = stemPlayer.isCurrentlyPlaying() ? 'PAUSE' : 'PLAY'
       }
     })
 
-    // Keyboard shortcuts inside real stem mode ( [ ] L R space 1-6 )
+    // ---------- Keyboard shortcuts ----------
     const keyHandler = (ev: KeyboardEvent) => {
-      if (ev.target instanceof HTMLInputElement) return
+      if (ev.target instanceof HTMLInputElement || ev.target instanceof HTMLTextAreaElement) return
       const key = ev.key.toLowerCase()
 
       switch (key) {
@@ -2750,6 +3070,27 @@ class WebLooper {
           ev.preventDefault()
           stemPlayer.restartFromLoopStart()
           break
+        case 'arrowleft':
+          ev.preventDefault()
+          {
+            const cur = (window as any).__currentStemTime ?? 0
+            stemPlayer.seek(Math.max(0, cur - 1))
+          }
+          break
+        case 'arrowright':
+          ev.preventDefault()
+          {
+            const cur = (window as any).__currentStemTime ?? 0
+            stemPlayer.seek(Math.min(decoded.duration, cur + 1))
+          }
+          break
+        case 'escape':
+          this.hideShortcuts()
+          break
+        case '?':
+          ev.preventDefault()
+          this.showShortcuts()
+          break
         case '1': stemPlayer.setPlaybackRate(0.5); updateSpeed(); break
         case '2': stemPlayer.setPlaybackRate(0.75); updateSpeed(); break
         case '3': stemPlayer.setPlaybackRate(1); updateSpeed(); break
@@ -2760,10 +3101,7 @@ class WebLooper {
     }
     document.addEventListener('keydown', keyHandler, { capture: false })
 
-    // Initial visuals
-    updateLoopUI()
-
-    // Exit
+    // ---------- Exit ----------
     document.getElementById('exit-stem-real')!.addEventListener('click', () => {
       document.removeEventListener('keydown', keyHandler, { capture: false } as any)
       unsub()
@@ -2771,9 +3109,12 @@ class WebLooper {
       stemArea.remove()
       this.els.loaderSection.classList.remove('hidden')
       this.reEnableSeparateStemsButton()
+      // Refresh lists so user sees this session in the recent stems
+      this.renderInitialPreviousStems()
+      this.renderInitialRecentVideos()
     })
 
-    console.log('%c[weblooper] Real stems loaded into StemPlayer (with full loop controls)', 'color:#166534')
+    console.log('%c[weblooper] Real stems loaded into StemPlayer (full controls + presets)', 'color:#166534')
   }
 
   /**
@@ -3451,6 +3792,10 @@ class WebLooper {
 
   // ---------- Keyboard ----------
   private handleKeyboard(ev: KeyboardEvent) {
+    // Only handle shortcuts when in workspace view
+    if (this.currentView !== 'workspace') return
+    // Don't handle when stem practice mode is active (it has its own handler)
+    if (document.getElementById('stem-practice-area')) return
     // Ignore when typing in inputs
     const target = ev.target as HTMLElement
     if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return
@@ -3501,19 +3846,23 @@ class WebLooper {
   }
 
   private showShortcuts() {
+    if (this.currentView !== 'workspace') return
     this.els.shortcutsModal.classList.remove('hidden')
     this.els.shortcutsModal.classList.add('flex')
   }
 
   private hideShortcuts() {
+    if (this.currentView !== 'workspace') return
     this.els.shortcutsModal.classList.remove('flex')
     this.els.shortcutsModal.classList.add('hidden')
   }
 
   // ---------- Global ----------
   private bindGlobalEvents() {
-    // Allow pasting a URL anywhere when loader is visible (nice UX)
+    // Allow pasting a URL anywhere when in workspace and loader is visible (nice UX)
     document.addEventListener('paste', (ev) => {
+      if (this.currentView !== 'workspace') return
+      if (!this.els?.playerSection) return
       if (this.els.playerSection.classList.contains('hidden')) {
         const text = ev.clipboardData?.getData('text')
         if (text && getYouTubeVideoId(text)) {

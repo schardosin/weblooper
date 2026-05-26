@@ -23,8 +23,6 @@ export interface DemucsRsSeparateOptions {
   signal?: AbortSignal
 }
 
-const WORKER_URL = new URL('./workers/demucs-rs-worker.ts', import.meta.url)
-
 // WASM assets now live inside src/vendor/demucs-rs/
 // They are resolved inside the worker using new URL(..., import.meta.url) for proper Vite support.
 
@@ -32,7 +30,12 @@ let worker: Worker | null = null
 let readyPromise: Promise<void> | null = null
 
 function createWorker(): Worker {
-  return new Worker(WORKER_URL, { type: 'module' })
+  // NOTE: The `new Worker(new URL(...), ...)` must be a single expression
+  // for Vite to detect it as a worker entry and bundle it as .js (not copy as .ts).
+  return new Worker(
+    new URL('./workers/demucs-rs-worker.ts', import.meta.url),
+    { type: 'module' }
+  )
 }
 
 async function ensureWorker(onProgress?: (p: DemucsRsProgress) => void): Promise<Worker> {

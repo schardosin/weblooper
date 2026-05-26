@@ -2,6 +2,8 @@
 
 [![Deploy to GitHub Pages](https://github.com/schardosin/weblooper/actions/workflows/deploy.yml/badge.svg)](https://github.com/schardosin/weblooper/actions/workflows/deploy.yml)
 
+> **[Try it live](https://schardosin.github.io/weblooper/)** — no install, runs entirely in your browser.
+
 **The beautiful, focused practice tool for musicians.**
 
 Loop any part of a song with pixel-perfect precision. Separate stems with AI that runs entirely in your browser. Save your work and come back anytime — everything stays on your device.

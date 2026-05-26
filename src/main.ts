@@ -418,11 +418,12 @@ class WebLooper {
               </div>
             </div>
 
-            <div class="premium-card group bg-zinc-900 border border-white/10 rounded-3xl overflow-hidden flex flex-col">
-              <div class="p-8 flex-1">
+            <div class="premium-card group bg-zinc-900 border border-white/10 rounded-3xl overflow-hidden">
+              <div class="feature-img h-56" style="background-image: url('${import.meta.env.BASE_URL}brand/practice.jpg')"></div>
+              <div class="p-8">
                 <div class="font-semibold text-xl tracking-tight">Practice with Stems</div>
                 <div class="text-zinc-400 mt-3 leading-relaxed">Isolate any instrument, slow it down, loop sections, save presets. The ultimate practice environment for learning songs by ear.</div>
-                <div class="mt-8 text-xs text-emerald-400/80 flex items-center gap-2">
+                <div class="mt-5 text-xs text-emerald-400/80 flex items-center gap-2">
                   <div class="w-1.5 h-1.5 rounded-full bg-emerald-400"></div>
                   WORKS WITH YOUTUBE &amp; LOCAL FILES
                 </div>

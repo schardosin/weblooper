@@ -102,14 +102,18 @@ The site is automatically built and deployed via GitHub Actions on every push to
 
 **Live site:** [https://schardosin.github.io/weblooper/](https://schardosin.github.io/weblooper/)
 
-### One-time setup required
+### One-time manual setup (required the first time)
 
-The first time (or if Pages was previously set to "Deploy from a branch"), you must:
+GitHub requires you to enable GitHub Actions as the deployment source **once** in the UI:
 
-1. Go to the repository **Settings → Pages**
-2. Under **"Build and deployment" → Source**, select **GitHub Actions**
+1. Go to **Settings → Pages** in this repository.
+2. Under **"Build and deployment" → Source**, select **GitHub Actions**.
+3. Save.
 
-After this single manual step, the workflow in `.github/workflows/deploy.yml` will handle all future deployments automatically.
+After this one-time step, the workflow will automatically build and deploy on every push to `main`.
+
+**Live site (after first successful deploy):**  
+https://schardosin.github.io/weblooper/
 
 ---
 

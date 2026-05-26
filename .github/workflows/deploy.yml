@@ -1,5 +1,12 @@
 name: Deploy to GitHub Pages
 
+# IMPORTANT ONE-TIME SETUP REQUIRED:
+# Before this workflow can succeed the first time, you MUST go to the repository
+# Settings → Pages and set "Source" to "GitHub Actions".
+# GitHub does not allow the GITHUB_TOKEN to create the Pages site automatically
+# on first use (security restriction). After this manual step, the workflow
+# will deploy automatically on every push to main.
+
 on:
   push:
     branches: [ main ]

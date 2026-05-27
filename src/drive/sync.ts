@@ -348,8 +348,22 @@ export async function fetchCloudVideoStates(): Promise<Record<string, CloudVideo
     videoStatesFileId = file.id
     const text = await drive.downloadFileAsText(token, file.id)
     const data: VideoStatesFile = JSON.parse(text)
-    videoStatesCache = data
-    return data.states || {}
+
+    // Sanitize on read so even previously polluted cloud data is cleaned when used
+    const allowedKeys = ['videoId', 'title', 'duration', 'start', 'end', 'isLooping', 'playbackRate', 'presets', 'lastVisited']
+    const cleaned: Record<string, any> = {}
+    for (const [id, raw] of Object.entries(data.states || {})) {
+      if (!raw || typeof raw !== 'object') continue
+      const clean: any = {}
+      for (const k of allowedKeys) {
+        if (k in raw) clean[k] = (raw as any)[k]
+      }
+      if ((raw as any).videoId) clean.videoId = (raw as any).videoId
+      cleaned[id] = clean
+    }
+
+    videoStatesCache = { ...data, states: cleaned }
+    return cleaned
   } catch (err) {
     console.error('[drive-sync] Failed to fetch cloud video states:', err)
     return {}
@@ -365,9 +379,23 @@ export async function uploadVideoStates(states: Record<string, any>): Promise<vo
   try {
     const token = await getValidToken()
 
+    // Sanitize all states before upload to strip any UI-only fields that may have leaked
+    // (e.g. "source" from merging logic on any client).
+    const cleanStates: Record<string, any> = {}
+    const allowedKeys = ['videoId', 'title', 'duration', 'start', 'end', 'isLooping', 'playbackRate', 'presets', 'lastVisited']
+    for (const [id, raw] of Object.entries(states || {})) {
+      if (!raw || typeof raw !== 'object') continue
+      const clean: any = {}
+      for (const k of allowedKeys) {
+        if (k in raw) clean[k] = (raw as any)[k]
+      }
+      if ((raw as any).videoId) clean.videoId = (raw as any).videoId
+      cleanStates[id] = clean
+    }
+
     const payload: VideoStatesFile = {
       version: 1,
-      states,
+      states: cleanStates,
     }
     const json = JSON.stringify(payload, null, 2)
 
@@ -384,7 +412,7 @@ export async function uploadVideoStates(states: Record<string, any>): Promise<vo
       }
     }
 
-    videoStatesCache = payload
+    videoStatesCache = { version: 1, states: cleanStates }
     console.log('[drive-sync] Video states uploaded to cloud')
   } catch (err) {
     console.error('[drive-sync] Failed to upload video states:', err)

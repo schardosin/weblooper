@@ -118,11 +118,40 @@ function getYouTubeVideoId(urlOrId: string): string | null {
 
 const STORAGE_KEY = 'weblooper_state_v1'
 
+/**
+ * Sanitize a video state object before persisting to localStorage or uploading to Drive.
+ * Strips UI-only fields (like "source") and keeps only the known persistent fields.
+ * This prevents pollution of the cross-device state (e.g. "source: cloud" leaking into video-states.json).
+ */
+function sanitizeVideoState(raw: any): any {
+  if (!raw || typeof raw !== 'object') return {}
+  const clean: any = {}
+  const allowedKeys = [
+    'videoId',
+    'title',
+    'duration',
+    'start',
+    'end',
+    'isLooping',
+    'playbackRate',
+    'presets',
+    'lastVisited',
+  ]
+  for (const key of allowedKeys) {
+    if (key in raw) {
+      clean[key] = raw[key]
+    }
+  }
+  // Always ensure videoId is present if we have it
+  if (raw.videoId) clean.videoId = raw.videoId
+  return clean
+}
+
 function saveVideoState(videoId: string, state: Partial<VideoState> & { title?: string }) {
   try {
     const all = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}')
-    const existing = all[videoId] || {}
-    all[videoId] = {
+    const existing = sanitizeVideoState(all[videoId] || {})
+    const merged = {
       ...existing,
       ...state,
       videoId,
@@ -130,6 +159,7 @@ function saveVideoState(videoId: string, state: Partial<VideoState> & { title?: 
       // keep the best title we have seen
       title: state.title || existing.title || undefined,
     }
+    all[videoId] = sanitizeVideoState(merged)
 
     // Prune to the most recent 15 videos so localStorage doesn't grow forever
     const entries = Object.values(all) as any[]
@@ -137,7 +167,7 @@ function saveVideoState(videoId: string, state: Partial<VideoState> & { title?: 
       entries.sort((a: any, b: any) => (b.lastVisited || 0) - (a.lastVisited || 0))
       const keep = entries.slice(0, 15)
       const pruned: any = {}
-      keep.forEach((e: any) => { if (e.videoId) pruned[e.videoId] = e })
+      keep.forEach((e: any) => { if (e.videoId) pruned[e.videoId] = sanitizeVideoState(e) })
       localStorage.setItem(STORAGE_KEY, JSON.stringify(pruned))
       // Best-effort cloud sync of the pruned map
       triggerBackgroundVideoStatesUpload(pruned)
@@ -157,8 +187,13 @@ function triggerBackgroundVideoStatesUpload(states: Record<string, any>) {
   // Dynamic import to avoid blocking + no top-level await issues
   import('./drive').then(({ isSignedIn, uploadVideoStates }) => {
     if (!isSignedIn()) return
+    // Sanitize before upload to prevent leaking UI-only fields (source, etc.) to Drive
+    const cleanStates: Record<string, any> = {}
+    for (const [id, s] of Object.entries(states || {})) {
+      cleanStates[id] = sanitizeVideoState(s)
+    }
     // Don't await — best effort background sync
-    uploadVideoStates(states).catch((err: any) =>
+    uploadVideoStates(cleanStates).catch((err: any) =>
       console.warn('[drive-sync] Background video states upload failed:', err?.message || err)
     )
   }).catch(() => {})
@@ -1950,7 +1985,7 @@ class WebLooper {
       const raw = localStorage.getItem(STORAGE_KEY)
       if (!raw) return []
       const all = JSON.parse(raw)
-      const entries = Object.values(all) as any[]
+      const entries = Object.values(all).map(sanitizeVideoState) as any[]
       entries.sort((a: any, b: any) => (b.lastVisited || 0) - (a.lastVisited || 0))
       return entries.slice(0, limit)
     } catch {
@@ -1986,7 +2021,7 @@ class WebLooper {
       const cloudOnlyIds = Object.keys(cloudStates).filter(id => !localIds.has(id))
 
       const cloudOnlyEntries = cloudOnlyIds.map(id => ({
-        ...(cloudStates[id] || {}),
+        ...sanitizeVideoState(cloudStates[id] || {}),
         videoId: id,
         source: 'cloud' as const,
       }))
@@ -2058,10 +2093,12 @@ class WebLooper {
         // Load / Download
         row.querySelector('.load-recent')?.addEventListener('click', async () => {
           if (isCloudOnly) {
-            // Merge cloud state into localStorage, then load
+            // Merge cloud state into localStorage, then load.
+            // Sanitize to avoid writing UI-only fields (e.g. "source") into the persisted state.
             try {
               const all = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}')
-              all[entry.videoId] = { ...entry, lastVisited: Date.now() }
+              const clean = sanitizeVideoState(entry)
+              all[entry.videoId] = { ...clean, lastVisited: Date.now() }
               localStorage.setItem(STORAGE_KEY, JSON.stringify(all))
             } catch {}
           }

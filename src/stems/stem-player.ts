@@ -154,7 +154,7 @@ export class StemPlayer {
   }
 
   async setPlaybackRate(rate: number) {
-    const newRate = Math.max(0.5, Math.min(rate, 2.0))
+    const newRate = Math.max(0.25, Math.min(rate, 2.0))
     if (Math.abs(newRate - this.playbackRate) < 0.01) return
 
     const wasPlaying = this.isPlaying

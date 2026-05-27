@@ -41,7 +41,7 @@ declare global {
 // Constants & Helpers
 // ============================================
 
-const DEFAULT_SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 2]
+const DEFAULT_SPEEDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2]
 
 function formatTime(totalSeconds: number, showDecimals = false): string {
   if (!isFinite(totalSeconds) || totalSeconds < 0) return '0:00'
@@ -1040,7 +1040,7 @@ class WebLooper {
     const speedDec = document.getElementById('speed-dec')!
     const speedInc = document.getElementById('speed-inc')!
     speedDec.addEventListener('click', () => {
-      const next = Math.max(0.5, Math.round((this.playbackRate - 0.05) * 100) / 100)
+      const next = Math.max(0.25, Math.round((this.playbackRate - 0.05) * 100) / 100)
       this.setPlaybackRate(next)
     })
     speedInc.addEventListener('click', () => {
@@ -3606,7 +3606,7 @@ class WebLooper {
       persistStemState()
     }
 
-    ;[0.5, 0.75, 1, 1.25, 1.5, 2].forEach(s => {
+    ;[0.25, 0.5, 0.75, 1, 1.25, 1.5, 2].forEach(s => {
       const b = document.createElement('button')
       b.className = `speed-chip ${Math.abs(s - currentRate) < 0.01 ? 'active' : ''}`
       b.textContent = s + '×'
@@ -3618,7 +3618,7 @@ class WebLooper {
     const speedDecBtn = document.getElementById('stem-speed-dec-real')!
     const speedIncBtn = document.getElementById('stem-speed-inc-real')!
     speedDecBtn.onclick = () => {
-      const next = Math.max(0.5, Math.round((stemPlayer.getCurrentPlaybackRate() - 0.05) * 100) / 100)
+      const next = Math.max(0.25, Math.round((stemPlayer.getCurrentPlaybackRate() - 0.05) * 100) / 100)
       stemPlayer.setPlaybackRate(next); updateSpeed()
     }
     speedIncBtn.onclick = () => {
@@ -3718,14 +3718,14 @@ class WebLooper {
           ev.preventDefault()
           this.showShortcuts()
           break
-        case '1': stemPlayer.setPlaybackRate(0.5); updateSpeed(); break
+        case '1': stemPlayer.setPlaybackRate(0.25); updateSpeed(); break
         case '2': stemPlayer.setPlaybackRate(0.75); updateSpeed(); break
         case '3': stemPlayer.setPlaybackRate(1); updateSpeed(); break
         case '4': stemPlayer.setPlaybackRate(1.25); updateSpeed(); break
         case '5': stemPlayer.setPlaybackRate(1.5); updateSpeed(); break
         case '6': stemPlayer.setPlaybackRate(2); updateSpeed(); break
         case '-': {
-          const next = Math.max(0.5, Math.round((stemPlayer.getCurrentPlaybackRate() - 0.05) * 100) / 100)
+          const next = Math.max(0.25, Math.round((stemPlayer.getCurrentPlaybackRate() - 0.05) * 100) / 100)
           stemPlayer.setPlaybackRate(next); updateSpeed(); break
         }
         case '=':
@@ -3931,7 +3931,7 @@ class WebLooper {
     // === Speed chips ===
     const speedContainer = document.getElementById('stem-speed-chips')!
     const speedValue = document.getElementById('stem-speed-value')!
-    const speeds = [0.5, 0.75, 1, 1.25, 1.5, 2]
+    const speeds = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2]
 
     speeds.forEach(speed => {
       const btn = document.createElement('button')
@@ -3948,7 +3948,7 @@ class WebLooper {
     const speedDecBtnDemo = document.getElementById('stem-speed-dec')!
     const speedIncBtnDemo = document.getElementById('stem-speed-inc')!
     speedDecBtnDemo.onclick = () => {
-      const next = Math.max(0.5, Math.round((stemPlayer.getCurrentPlaybackRate() - 0.05) * 100) / 100)
+      const next = Math.max(0.25, Math.round((stemPlayer.getCurrentPlaybackRate() - 0.05) * 100) / 100)
       stemPlayer.setPlaybackRate(next); updateSpeedUI()
     }
     speedIncBtnDemo.onclick = () => {
@@ -4048,14 +4048,14 @@ class WebLooper {
           ev.preventDefault()
           stemPlayer.restart()
           break
-        case '1': stemPlayer.setPlaybackRate(0.5); updateSpeedUI(); break
+        case '1': stemPlayer.setPlaybackRate(0.25); updateSpeedUI(); break
         case '2': stemPlayer.setPlaybackRate(0.75); updateSpeedUI(); break
         case '3': stemPlayer.setPlaybackRate(1); updateSpeedUI(); break
         case '4': stemPlayer.setPlaybackRate(1.25); updateSpeedUI(); break
         case '5': stemPlayer.setPlaybackRate(1.5); updateSpeedUI(); break
         case '6': stemPlayer.setPlaybackRate(2); updateSpeedUI(); break
         case '-': {
-          const next = Math.max(0.5, Math.round((stemPlayer.getCurrentPlaybackRate() - 0.05) * 100) / 100)
+          const next = Math.max(0.25, Math.round((stemPlayer.getCurrentPlaybackRate() - 0.05) * 100) / 100)
           stemPlayer.setPlaybackRate(next); updateSpeedUI(); break
         }
         case '=':
@@ -4571,14 +4571,14 @@ class WebLooper {
         ev.preventDefault()
         if (this.playerReady) this.seekTo(Math.min(this.duration, this.lastKnownTime + 1))
         break
-      case '1': this.setPlaybackRate(0.5); break
+      case '1': this.setPlaybackRate(0.25); break
       case '2': this.setPlaybackRate(0.75); break
       case '3': this.setPlaybackRate(1); break
       case '4': this.setPlaybackRate(1.25); break
       case '5': this.setPlaybackRate(1.5); break
       case '6': this.setPlaybackRate(2); break
       case '-': {
-        const next = Math.max(0.5, Math.round((this.playbackRate - 0.05) * 100) / 100)
+        const next = Math.max(0.25, Math.round((this.playbackRate - 0.05) * 100) / 100)
         this.setPlaybackRate(next)
         break
       }

@@ -139,13 +139,29 @@ function saveVideoState(videoId: string, state: Partial<VideoState> & { title?: 
       const pruned: any = {}
       keep.forEach((e: any) => { if (e.videoId) pruned[e.videoId] = e })
       localStorage.setItem(STORAGE_KEY, JSON.stringify(pruned))
+      // Best-effort cloud sync of the pruned map
+      triggerBackgroundVideoStatesUpload(pruned)
       return
     }
 
     localStorage.setItem(STORAGE_KEY, JSON.stringify(all))
+    // Best-effort cloud sync when signed in
+    triggerBackgroundVideoStatesUpload(all)
   } catch (e) {
     console.warn('Failed to save state', e)
   }
+}
+
+/** Fire-and-forget upload of current video states to Drive (if signed in) */
+function triggerBackgroundVideoStatesUpload(states: Record<string, any>) {
+  // Dynamic import to avoid blocking + no top-level await issues
+  import('./drive').then(({ isSignedIn, uploadVideoStates }) => {
+    if (!isSignedIn()) return
+    // Don't await — best effort background sync
+    uploadVideoStates(states).catch((err: any) =>
+      console.warn('[drive-sync] Background video states upload failed:', err?.message || err)
+    )
+  }).catch(() => {})
 }
 
 function loadVideoState(videoId: string): Partial<VideoState> | null {
@@ -1946,64 +1962,214 @@ class WebLooper {
    * This gives users a one-click way to jump back to videos they were looping,
    * with all their custom loops, presets, and settings restored automatically.
    */
-  private renderInitialRecentVideos() {
+  private async renderInitialRecentVideos() {
     const section = document.getElementById('initial-recent-videos')
     const listEl = document.getElementById('initial-recent-videos-list')
     if (!section || !listEl) return
 
-    const entries = this.getRecentVideoEntries(10)
+    try {
+      const localEntries = this.getRecentVideoEntries(20)
 
-    if (entries.length === 0) {
-      section.classList.add('hidden')
-      return
-    }
-
-    section.classList.remove('hidden')
-    listEl.innerHTML = ''
-
-    entries.forEach((entry: any) => {
-      const row = document.createElement('div')
-      row.className = 'flex items-center justify-between gap-3 bg-zinc-950 rounded-2xl px-4 py-2 border border-white/5'
-
-      const date = entry.lastVisited
-        ? new Date(entry.lastVisited).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
-        : ''
-      const label = entry.title || `YouTube ${entry.videoId}`
-      const presetCount = Array.isArray(entry.presets) ? entry.presets.length : 0
-      const meta = presetCount > 0
-        ? `${date} • ${presetCount} saved loop${presetCount === 1 ? '' : 's'}`
-        : date
-
-      row.innerHTML = `
-        <div class="min-w-0">
-          <div class="font-medium truncate">${label}</div>
-          <div class="text-[10px] text-zinc-500">${meta || 'Previously loaded'}</div>
-        </div>
-        <div class="flex items-center gap-2 shrink-0">
-          <button class="load-recent px-3 py-1 text-xs rounded-xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/20">Load</button>
-          <button class="del-recent px-2 py-1 text-xs rounded-xl border border-white/10 text-zinc-400 hover:text-rose-400">Delete</button>
-        </div>
-      `
-
-      row.querySelector('.load-recent')?.addEventListener('click', () => {
-        this.els.loaderSection.classList.add('hidden')
-        this.loadVideoFromUrl(entry.videoId)
-      })
-
-      row.querySelector('.del-recent')?.addEventListener('click', () => {
-        if (confirm(`Remove "${label}" from recent videos?`)) {
-          try {
-            const all = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}')
-            delete all[entry.videoId]
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(all))
-          } catch {}
-          row.remove()
-          if (listEl.children.length === 0) section.classList.add('hidden')
+      // Also fetch cloud video states if signed in (lightweight JSON)
+      let cloudStates: Record<string, any> = {}
+      let userIsSignedIn = false
+      try {
+        const { isSignedIn, fetchCloudVideoStates } = await import('./drive')
+        userIsSignedIn = isSignedIn()
+        if (userIsSignedIn) {
+          cloudStates = await fetchCloudVideoStates()
         }
-      })
+      } catch {}
 
-      listEl.appendChild(row)
-    })
+      const localIds = new Set(localEntries.map((e: any) => e.videoId))
+      const cloudOnlyIds = Object.keys(cloudStates).filter(id => !localIds.has(id))
+
+      const cloudOnlyEntries = cloudOnlyIds.map(id => ({
+        ...(cloudStates[id] || {}),
+        videoId: id,
+        source: 'cloud' as const,
+      }))
+
+      const allEntries = [
+        ...localEntries.map((e: any) => ({ ...e, source: 'local' as const })),
+        ...cloudOnlyEntries,
+      ]
+
+      if (allEntries.length === 0) {
+        section.classList.add('hidden')
+        return
+      }
+
+      section.classList.remove('hidden')
+      listEl.innerHTML = ''
+
+      allEntries.slice(0, 12).forEach((entry: any) => {
+        const row = document.createElement('div')
+        row.className = 'flex items-center justify-between gap-3 bg-zinc-950 rounded-2xl px-4 py-2 border border-white/5'
+
+        const date = entry.lastVisited
+          ? new Date(entry.lastVisited).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+          : ''
+        const label = entry.title || `YouTube ${entry.videoId}`
+        const presetCount = Array.isArray(entry.presets) ? entry.presets.length : 0
+        const meta = presetCount > 0
+          ? `${date} • ${presetCount} saved loop${presetCount === 1 ? '' : 's'}`
+          : date
+
+        const isLocal = entry.source === 'local'
+        const isSynced = isLocal && userIsSignedIn && (cloudStates as any)[entry.videoId]
+        const isCloudOnly = entry.source === 'cloud'
+        const isLocalOnly = isLocal && (!userIsSignedIn || !(cloudStates as any)[entry.videoId])
+
+        const cloudBadge = isCloudOnly
+          ? '<span class="text-[9px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20">cloud</span>'
+          : isSynced
+            ? '<span class="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">synced</span>'
+            : ''
+
+        const showSyncBtn = isLocalOnly && userIsSignedIn
+
+        let delBtnText: string
+        let delBtnClass: string
+        if (isSynced) {
+          delBtnText = 'Remove from device'
+          delBtnClass = 'del-recent px-2 py-1 text-xs rounded-xl border border-white/10 text-zinc-400 hover:text-amber-400'
+        } else if (isCloudOnly) {
+          delBtnText = 'Delete'
+          delBtnClass = 'del-recent px-2 py-1 text-xs rounded-xl border border-white/10 text-zinc-400 hover:text-rose-400'
+        } else {
+          delBtnText = 'Delete'
+          delBtnClass = 'del-recent px-2 py-1 text-xs rounded-xl border border-white/10 text-zinc-400 hover:text-rose-400'
+        }
+
+        row.innerHTML = `
+          <div class="min-w-0">
+            <div class="font-medium truncate flex items-center gap-2">${label} ${cloudBadge}</div>
+            <div class="text-[10px] text-zinc-500">${meta || 'Previously loaded'}</div>
+          </div>
+          <div class="flex items-center gap-2 shrink-0">
+            ${showSyncBtn ? '<button class="sync-video px-2 py-1 text-xs rounded-xl bg-blue-500/10 text-blue-400 border border-blue-500/30 hover:bg-blue-500/20" title="Upload to Google Drive"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></button>' : ''}
+            <button class="load-recent px-3 py-1 text-xs rounded-xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/20">${isCloudOnly ? 'Download' : 'Load'}</button>
+            <button class="${delBtnClass}">${delBtnText}</button>
+          </div>
+        `
+
+        // Load / Download
+        row.querySelector('.load-recent')?.addEventListener('click', async () => {
+          if (isCloudOnly) {
+            // Merge cloud state into localStorage, then load
+            try {
+              const all = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}')
+              all[entry.videoId] = { ...entry, lastVisited: Date.now() }
+              localStorage.setItem(STORAGE_KEY, JSON.stringify(all))
+            } catch {}
+          }
+          this.els.loaderSection.classList.add('hidden')
+          this.loadVideoFromUrl(entry.videoId)
+        })
+
+        // Delete / Remove
+        row.querySelector('.del-recent')?.addEventListener('click', async () => {
+          const doRemoveLocal = async () => {
+            try {
+              const all = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}')
+              delete all[entry.videoId]
+              localStorage.setItem(STORAGE_KEY, JSON.stringify(all))
+            } catch {}
+            row.remove()
+            if (listEl.children.length === 0) section.classList.add('hidden')
+          }
+
+          if (isSynced) {
+            // Remove local only — transform row to cloud-only
+            await doRemoveLocal()
+
+            // Re-render to reflect the new state (simplest reliable path)
+            this.renderInitialRecentVideos()
+          } else if (isCloudOnly) {
+            if (confirm(`Permanently delete "${label}" from Google Drive?`)) {
+              const { deleteCloudVideoState } = await import('./drive')
+              await deleteCloudVideoState(entry.videoId)
+              row.remove()
+              if (listEl.children.length === 0) section.classList.add('hidden')
+            }
+          } else {
+            // Local only
+            if (confirm(`Remove "${label}" from recent videos?`)) {
+              await doRemoveLocal()
+            }
+          }
+        })
+
+        // Per-item Sync to cloud
+        const syncBtn = row.querySelector('.sync-video') as HTMLButtonElement | null
+        if (syncBtn) {
+          syncBtn.addEventListener('click', async (e) => {
+            e.stopPropagation()
+            syncBtn.disabled = true
+            syncBtn.innerHTML = '<span class="text-[10px]">...</span>'
+
+            try {
+              const { uploadVideoStates } = await import('./drive')
+              // Read the freshest local states and push everything
+              const raw = localStorage.getItem(STORAGE_KEY) || '{}'
+              const localMap = JSON.parse(raw)
+              await uploadVideoStates(localMap)
+
+              // Refresh list so it shows as synced
+              this.renderInitialRecentVideos()
+            } catch (err) {
+              console.error('[drive-sync] Video sync failed:', err)
+              syncBtn.innerHTML = '<span class="text-[10px] text-rose-400">!</span>'
+              syncBtn.disabled = false
+            }
+          })
+        }
+
+        listEl.appendChild(row)
+      })
+    } catch (e) {
+      console.warn('[weblooper] Could not render initial recent videos with cloud', e)
+      // Fallback to local-only render
+      const entries = this.getRecentVideoEntries(10)
+      if (entries.length === 0) {
+        section.classList.add('hidden')
+        return
+      }
+      section.classList.remove('hidden')
+      listEl.innerHTML = ''
+      // Simple fallback rendering (old behavior)
+      entries.forEach((entry: any) => {
+        const row = document.createElement('div')
+        row.className = 'flex items-center justify-between gap-3 bg-zinc-950 rounded-2xl px-4 py-2 border border-white/5'
+        const label = entry.title || `YouTube ${entry.videoId}`
+        row.innerHTML = `
+          <div class="min-w-0">
+            <div class="font-medium truncate">${label}</div>
+          </div>
+          <div class="flex items-center gap-2 shrink-0">
+            <button class="load-recent px-3 py-1 text-xs rounded-xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">Load</button>
+            <button class="del-recent px-2 py-1 text-xs rounded-xl border border-white/10 text-zinc-400 hover:text-rose-400">Delete</button>
+          </div>
+        `
+        row.querySelector('.load-recent')?.addEventListener('click', () => {
+          this.els.loaderSection.classList.add('hidden')
+          this.loadVideoFromUrl(entry.videoId)
+        })
+        row.querySelector('.del-recent')?.addEventListener('click', () => {
+          if (confirm(`Remove "${label}" from recent videos?`)) {
+            try {
+              const all = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}')
+              delete all[entry.videoId]
+              localStorage.setItem(STORAGE_KEY, JSON.stringify(all))
+            } catch {}
+            row.remove()
+            if (listEl.children.length === 0) section.classList.add('hidden')
+          }
+        })
+        listEl.appendChild(row)
+      })
+    }
   }
 
   /**
@@ -4359,10 +4525,14 @@ class WebLooper {
         try {
           label!.textContent = 'Signing in...'
           await signIn()
-          // Fetch cloud sessions after signing in
+          // Fetch cloud data after signing in
           await fetchCloudSessions()
-          // Refresh the session lists
+          // Also fetch video states so recent videos show cloud copies
+          const { fetchCloudVideoStates } = await import('./drive')
+          await fetchCloudVideoStates().catch(() => {})
+          // Refresh the lists
           this.renderInitialPreviousStems()
+          this.renderInitialRecentVideos()
         } catch (err: any) {
           console.error('[drive] Sign-in failed:', err)
           label!.textContent = 'Sign in'

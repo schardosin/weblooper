@@ -300,3 +300,126 @@ export async function deleteCloudSession(sessionId: string): Promise<void> {
 export function isSessionInCloud(sessionId: string): boolean {
   return manifestCache?.sessions.some(s => s.id === sessionId) ?? false
 }
+
+// ============================================
+// Video State Sync (lightweight JSON — no binary data)
+// ============================================
+
+export interface CloudVideoState {
+  videoId: string
+  title?: string
+  lastVisited?: number
+  duration?: number
+  start?: number
+  end?: number
+  isLooping?: boolean
+  playbackRate?: number
+  presets?: any[]
+  [key: string]: any
+}
+
+interface VideoStatesFile {
+  version: number
+  states: Record<string, CloudVideoState>
+}
+
+// Cache
+let videoStatesCache: VideoStatesFile | null = null
+let videoStatesFileId: string | null = null
+
+const VIDEO_STATES_FILENAME = 'video-states.json'
+
+/**
+ * Fetch video states from cloud (single small JSON file).
+ * Returns empty object if not signed in or file doesn't exist.
+ */
+export async function fetchCloudVideoStates(): Promise<Record<string, CloudVideoState>> {
+  if (!isSignedIn()) return {}
+
+  try {
+    const token = await getValidToken()
+
+    const file = await drive.findFileByName(token, VIDEO_STATES_FILENAME)
+    if (!file) {
+      videoStatesCache = { version: 1, states: {} }
+      return {}
+    }
+
+    videoStatesFileId = file.id
+    const text = await drive.downloadFileAsText(token, file.id)
+    const data: VideoStatesFile = JSON.parse(text)
+    videoStatesCache = data
+    return data.states || {}
+  } catch (err) {
+    console.error('[drive-sync] Failed to fetch cloud video states:', err)
+    return {}
+  }
+}
+
+/**
+ * Upload (or update) the full video states map to Drive.
+ */
+export async function uploadVideoStates(states: Record<string, any>): Promise<void> {
+  if (!isSignedIn()) return
+
+  try {
+    const token = await getValidToken()
+
+    const payload: VideoStatesFile = {
+      version: 1,
+      states,
+    }
+    const json = JSON.stringify(payload, null, 2)
+
+    if (videoStatesFileId) {
+      await drive.updateFile(token, videoStatesFileId, json, 'application/json')
+    } else {
+      // Try to find existing first (in case cache is stale)
+      const existing = await drive.findFileByName(token, VIDEO_STATES_FILENAME)
+      if (existing) {
+        videoStatesFileId = existing.id
+        await drive.updateFile(token, existing.id, json, 'application/json')
+      } else {
+        videoStatesFileId = await drive.uploadFile(token, VIDEO_STATES_FILENAME, json, 'application/json')
+      }
+    }
+
+    videoStatesCache = payload
+    console.log('[drive-sync] Video states uploaded to cloud')
+  } catch (err) {
+    console.error('[drive-sync] Failed to upload video states:', err)
+  }
+}
+
+/**
+ * Delete a single video's state from the cloud file.
+ */
+export async function deleteCloudVideoState(videoId: string): Promise<void> {
+  if (!isSignedIn()) return
+
+  try {
+    const token = await getValidToken()
+
+    if (!videoStatesCache) {
+      await fetchCloudVideoStates()
+    }
+
+    if (videoStatesCache) {
+      delete videoStatesCache.states[videoId]
+
+      const json = JSON.stringify(videoStatesCache, null, 2)
+      if (videoStatesFileId) {
+        await drive.updateFile(token, videoStatesFileId, json, 'application/json')
+      }
+    }
+  } catch (err) {
+    console.error('[drive-sync] Failed to delete cloud video state:', err)
+  }
+}
+
+/**
+ * Check (from cache) whether a videoId exists in the cloud video states.
+ */
+export function isVideoInCloud(videoId: string): boolean {
+  return !!(videoStatesCache?.states?.[videoId])
+}

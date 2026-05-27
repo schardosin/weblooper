@@ -213,6 +213,16 @@ class WebLooper {
     this.route()
     this.bindGlobalEvents()
     window.addEventListener('hashchange', () => this.route())
+
+    // Prevent audio from auto-resuming when page is restored from bfcache
+    window.addEventListener('pageshow', (event) => {
+      if (event.persisted) {
+        // Page was restored from bfcache — stop any playing audio
+        if (this.player) {
+          try { this.player.pauseVideo() } catch {}
+        }
+      }
+    })
   }
 
   // ---------- Router ----------
@@ -1069,10 +1079,10 @@ class WebLooper {
     // Apply initial rate
     if (this.player) this.player.setPlaybackRate(this.playbackRate)
 
-    // If we had a saved loop active, start looping immediately
+    // Seek to loop start position but do NOT auto-play.
+    // The user must explicitly press play after loading a video.
     if (this.isLooping && this.player) {
       this.seekTo(this.start)
-      setTimeout(() => this.player?.playVideo(), 80)
     }
   }
 

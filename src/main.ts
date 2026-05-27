@@ -536,9 +536,16 @@ class WebLooper {
               </div>
             </div>
 
-            <!-- Right: Shortcuts + status -->
+            <!-- Right: Cloud sync + Shortcuts -->
             <div class="flex items-center gap-3">
-              <div class="hidden md:block text-[10px] text-zinc-500">Saved locally</div>
+              <button id="drive-sync-btn"
+                      class="flex items-center gap-2 px-3 py-1.5 text-xs rounded-full border border-white/10 hover:bg-white/5 transition whitespace-nowrap"
+                      title="Sync stems to Google Drive">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M18 10h-1.26A8 8 0 109 20h9a5 5 0 000-10z"/>
+                </svg>
+                <span id="drive-sync-label">Sign in</span>
+              </button>
               <button id="shortcuts-btn"
                       class="flex items-center gap-2 px-3 py-1.5 text-xs rounded-full border border-white/10 hover:bg-white/5 transition whitespace-nowrap">
                 <span>Shortcuts</span>
@@ -795,6 +802,9 @@ class WebLooper {
     document.getElementById('workspace-back-btn')?.addEventListener('click', () => {
       this.navigateTo('landing')
     })
+
+    // Wire Google Drive sync button
+    this.setupDriveSyncButton()
 
     this.attachUIListeners()
     this.renderSpeedChips()
@@ -1508,7 +1518,8 @@ class WebLooper {
               // Local file — use the audio-only stem practice view
               await this.enterStemPracticeWithRealStems(
                 { fileName: loaded.meta.fileName || loaded.meta.youtubeVideoTitle || 'YouTube Video', duration: loaded.meta.duration },
-                loaded.stems
+                loaded.stems,
+                loaded.meta,
               )
             }
           } else {
@@ -1556,9 +1567,30 @@ class WebLooper {
 
     try {
       const { listStemSessions, loadStemSession, deleteStemSession } = await import('./stems')
-      const sessions = listStemSessions()
+      const localSessions = listStemSessions()
 
-      if (sessions.length === 0) {
+      // Also fetch cloud sessions if signed in
+      let cloudSessions: import('./drive').CloudSession[] = []
+      let userIsSignedIn = false
+      try {
+        const { isSignedIn, fetchCloudSessions } = await import('./drive')
+        userIsSignedIn = isSignedIn()
+        if (userIsSignedIn) {
+          cloudSessions = await fetchCloudSessions()
+        }
+      } catch {}
+
+      // Merge: local sessions first, then cloud-only sessions
+      const localIds = new Set(localSessions.map(s => s.id))
+      const cloudIds = new Set(cloudSessions.map(s => s.id))
+      const cloudOnlySessions = cloudSessions.filter(cs => !localIds.has(cs.id))
+
+      const allSessions = [
+        ...localSessions.map(s => ({ ...s, source: 'local' as const })),
+        ...cloudOnlySessions.map(s => ({ ...s, source: 'cloud' as const })),
+      ]
+
+      if (allSessions.length === 0) {
         section.classList.add('hidden')
         return
       }
@@ -1566,7 +1598,7 @@ class WebLooper {
       section.classList.remove('hidden')
       listEl.innerHTML = ''
 
-      sessions.slice(0, 8).forEach((sess) => {
+      allSessions.slice(0, 10).forEach((sess) => {
         const row = document.createElement('div')
         row.className = 'flex items-center justify-between gap-3 bg-zinc-950 rounded-2xl px-4 py-2 border border-white/5'
 
@@ -1575,62 +1607,186 @@ class WebLooper {
           ? sess.youtubeVideoTitle 
           : (sess.fileName || 'Unknown session')
 
+        const cloudBadge = sess.source === 'cloud'
+          ? '<span class="text-[9px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20">cloud</span>'
+          : (userIsSignedIn && cloudIds.has(sess.id))
+            ? '<span class="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">synced</span>'
+            : ''
+
+        // Show sync button for local sessions not yet in cloud (only if signed in)
+        const showSyncBtn = sess.source === 'local' && userIsSignedIn && !cloudIds.has(sess.id)
+
         row.innerHTML = `
           <div class="min-w-0">
-            <div class="font-medium truncate">${label}</div>
+            <div class="font-medium truncate flex items-center gap-2">${label} ${cloudBadge}</div>
             <div class="text-[10px] text-zinc-500">${date} • ${formatTime(sess.duration)} • ${sess.stemNames.length} stems</div>
           </div>
           <div class="flex items-center gap-2 shrink-0">
-            <button class="load-init px-3 py-1 text-xs rounded-xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/20">Load</button>
+            ${showSyncBtn ? '<button class="sync-init px-2 py-1 text-xs rounded-xl bg-blue-500/10 text-blue-400 border border-blue-500/30 hover:bg-blue-500/20" title="Upload to Google Drive"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></button>' : ''}
+            <button class="load-init px-3 py-1 text-xs rounded-xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/20">${sess.source === 'cloud' ? 'Download' : 'Load'}</button>
             <button class="del-init px-2 py-1 text-xs rounded-xl border border-white/10 text-zinc-400 hover:text-rose-400">Delete</button>
           </div>
         `
 
         row.querySelector('.load-init')?.addEventListener('click', async () => {
-          const loaded = await loadStemSession(sess.id)
-          if (loaded && loaded.stems.length > 0) {
-            this.els.loaderSection.classList.add('hidden')
+          if (sess.source === 'cloud') {
+            // Download from cloud
+            await this.loadCloudSession(sess as import('./drive').CloudSession)
+          } else {
+            // Load from local OPFS
+            const loaded = await loadStemSession(sess.id)
+            if (loaded && loaded.stems.length > 0) {
+              this.els.loaderSection.classList.add('hidden')
 
-            // If this is a YouTube session, load the video with stems attached
-            if (loaded.meta.youtubeVideoId) {
-              await this.loadYouTubeVideoWithStems(loaded.meta.youtubeVideoId, loaded.stems)
+              if (loaded.meta.youtubeVideoId) {
+                await this.loadYouTubeVideoWithStems(loaded.meta.youtubeVideoId, loaded.stems)
+              } else {
+                await this.enterStemPracticeWithRealStems(
+                  { fileName: loaded.meta.fileName || loaded.meta.youtubeVideoTitle || 'YouTube Video', duration: loaded.meta.duration },
+                  loaded.stems,
+                  loaded.meta,
+                )
+              }
             } else {
-              // Local file — use the audio-only stem practice view
-              await this.enterStemPracticeWithRealStems(
-                { fileName: loaded.meta.fileName || loaded.meta.youtubeVideoTitle || 'YouTube Video', duration: loaded.meta.duration },
-                loaded.stems
+              console.error('[stems] Failed to load persisted session', sess.id, sess.fileName)
+              try {
+                await deleteStemSession(sess.id)
+              } catch {}
+              row.remove()
+              if (listEl.children.length === 0) section.classList.add('hidden')
+
+              alert(
+                `Failed to load the audio data for "${sess.fileName}".\n\n` +
+                `Possible causes: OPFS storage was cleared by the browser, disk quota exceeded, or there was an error during the original save.\n\n` +
+                `The broken entry has been removed. Please generate a fresh separation.`
               )
             }
-          } else {
-            console.error('[stems] Failed to load persisted session', sess.id, sess.fileName)
-            try {
-              await deleteStemSession(sess.id)
-            } catch {}
-            row.remove()
-            if (listEl.children.length === 0) section.classList.add('hidden')
-
-            alert(
-              `Failed to load the audio data for "${sess.fileName}".\n\n` +
-              `Possible causes: OPFS storage was cleared by the browser, disk quota exceeded, or there was an error during the original save.\n\n` +
-              `Detailed reason has been logged to the browser console (look for "[stems] loadStemSession failed").\n\n` +
-              `The broken entry has been removed. Please generate a fresh separation.`
-            )
           }
         })
 
         row.querySelector('.del-init')?.addEventListener('click', async () => {
           if (confirm(`Delete saved stems for "${sess.fileName}"?`)) {
-            await deleteStemSession(sess.id)
+            if (sess.source === 'cloud') {
+              const { deleteCloudSession } = await import('./drive')
+              await deleteCloudSession(sess.id)
+            } else {
+              await deleteStemSession(sess.id)
+            }
             row.remove()
             if (listEl.children.length === 0) section.classList.add('hidden')
           }
         })
+
+        // Sync button for local sessions not yet in cloud
+        const syncInitBtn = row.querySelector('.sync-init') as HTMLButtonElement | null
+        if (syncInitBtn) {
+          syncInitBtn.addEventListener('click', async (e) => {
+            e.stopPropagation()
+            syncInitBtn.disabled = true
+            syncInitBtn.innerHTML = '<span class="text-[10px]">...</span>'
+
+            try {
+              // Load stems from OPFS
+              const loaded = await loadStemSession(sess.id)
+              if (!loaded || loaded.stems.length === 0) {
+                syncInitBtn.innerHTML = '<span class="text-[10px] text-rose-400">!</span>'
+                return
+              }
+
+              const { uploadStemSession } = await import('./drive')
+              await uploadStemSession(
+                sess,
+                loaded.stems,
+                (p) => {
+                  if (p.phase === 'done') {
+                    // Replace button with synced badge
+                    syncInitBtn.remove()
+                    const badge = document.createElement('span')
+                    badge.className = 'text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                    badge.textContent = 'synced'
+                    row.querySelector('.font-medium')?.appendChild(badge)
+                  }
+                },
+              )
+            } catch (err) {
+              console.error('[drive-sync] List item sync failed:', err)
+              syncInitBtn.disabled = false
+              syncInitBtn.innerHTML = '<span class="text-[10px] text-rose-400">!</span>'
+            }
+          })
+        }
 
         listEl.appendChild(row)
       })
     } catch (e) {
       console.warn('[weblooper] Could not render initial previous stem sessions', e)
       section?.classList.add('hidden')
+    }
+  }
+
+  /**
+   * Load a stem session from Google Drive (cloud-only session).
+   */
+  private async loadCloudSession(session: import('./drive').CloudSession) {
+    try {
+      const { downloadStemSession } = await import('./drive')
+
+      // Show a loading indicator
+      const loaderSection = this.els.loaderSection
+      const prevHTML = loaderSection.innerHTML
+      loaderSection.innerHTML = `
+        <div class="text-center py-12">
+          <div class="text-emerald-400 text-xs tracking-[2px] mb-2">DOWNLOADING FROM CLOUD</div>
+          <div class="text-xl font-semibold tracking-tight mb-2">${session.fileName || 'Stem Session'}</div>
+          <div id="cloud-download-status" class="text-sm text-zinc-400">Downloading stems...</div>
+          <div class="mt-4 h-2 bg-zinc-800 rounded-full overflow-hidden max-w-[400px] mx-auto">
+            <div id="cloud-download-bar" class="h-2 bg-emerald-500 w-[5%] transition-all"></div>
+          </div>
+        </div>
+      `
+
+      const statusEl = document.getElementById('cloud-download-status')
+      const barEl = document.getElementById('cloud-download-bar')
+
+      const stems = await downloadStemSession(session, (p) => {
+        if (statusEl) statusEl.textContent = p.message
+        if (barEl && p.percent !== undefined) barEl.style.width = `${p.percent}%`
+      })
+
+      if (stems && stems.length > 0) {
+        // Also save to OPFS for future local access (cache)
+        try {
+          const { saveStemSession } = await import('./stems')
+          await saveStemSession(
+            {
+              fileName: session.fileName,
+              duration: session.duration,
+              stemNames: session.stemNames,
+              model: session.model,
+              youtubeVideoId: session.youtubeVideoId,
+              youtubeVideoTitle: session.youtubeVideoTitle,
+            },
+            stems,
+          )
+        } catch (e) {
+          console.warn('[drive-sync] Failed to cache cloud session locally:', e)
+        }
+
+        // Hide loader and open stem player
+        loaderSection.classList.add('hidden')
+        await this.enterStemPracticeWithRealStems(
+          { fileName: session.fileName || 'Cloud Session', duration: session.duration },
+          stems,
+          session,
+        )
+      } else {
+        // Restore loader
+        loaderSection.innerHTML = prevHTML
+        alert('Failed to download stems from cloud. The session may have been deleted.')
+      }
+    } catch (err: any) {
+      console.error('[drive-sync] Cloud session load failed:', err)
+      alert(`Failed to load cloud session: ${err.message}`)
     }
   }
 
@@ -2123,9 +2279,10 @@ class WebLooper {
       const tracksForPlayer = stemResult.stems.map(s => ({ name: s.name, buffer: s.audioBuffer }))
 
       let audioPersistenceSucceeded = true
+      let ytSavedSessionId: string | undefined
       try {
         const { saveStemSession } = await import('./stems')
-        await saveStemSession(
+        const savedId = await saveStemSession(
           {
             // Deliberately omit youtubeVideoId / youtubeVideoTitle.
             // This makes the stems first-class citizens exactly like local audio stems.
@@ -2135,6 +2292,20 @@ class WebLooper {
             model: 'demucs-rs htdemucs_6s',
           },
           tracksForPlayer
+        )
+        ytSavedSessionId = savedId
+
+        // Background upload to Google Drive (non-blocking)
+        this.backgroundUploadToCloud(
+          {
+            id: savedId,
+            fileName: `YouTube — ${ytTitle}`,
+            duration: result.decoded.duration,
+            stemNames: stemResult.stems.map(s => s.name),
+            model: 'demucs-rs htdemucs_6s',
+            createdAt: Date.now(),
+          },
+          tracksForPlayer,
         )
       } catch (e: any) {
         audioPersistenceSucceeded = false
@@ -2164,7 +2335,15 @@ class WebLooper {
       // No video, no sync, no attachment — exactly like a local audio stem session.
       this.enterStemPracticeWithRealStems(
         { fileName: `YouTube — ${ytTitle}`, duration: result.decoded.duration },
-        tracksForPlayer
+        tracksForPlayer,
+        ytSavedSessionId ? {
+          id: ytSavedSessionId,
+          fileName: `YouTube — ${ytTitle}`,
+          duration: result.decoded.duration,
+          stemNames: stemResult.stems.map(s => s.name),
+          model: 'demucs-rs htdemucs_6s',
+          createdAt: Date.now(),
+        } : undefined,
       )
 
       console.log('[weblooper] YouTube stem separation complete — stems are fully decoupled (no video relationship)')
@@ -2421,6 +2600,7 @@ class WebLooper {
 
         // Persist so user can come back to this separation later without re-running the model
         let audioPersistenceSucceeded = true
+        let localSavedSessionId: string | undefined
         try {
           const { saveStemSession } = await import('./stems')
           const savedId = await saveStemSession(
@@ -2432,7 +2612,21 @@ class WebLooper {
             },
             tracksForPlayer
           )
+          localSavedSessionId = savedId
           console.log('[weblooper] Stem session fully persisted (metadata + OPFS audio)', savedId)
+
+          // Background upload to Google Drive (non-blocking)
+          this.backgroundUploadToCloud(
+            {
+              id: savedId,
+              fileName: decoded.fileName,
+              duration: decoded.duration,
+              stemNames: result.stems.map(s => s.name),
+              model: 'demucs-rs htdemucs_6s',
+              createdAt: Date.now(),
+            },
+            tracksForPlayer,
+          )
         } catch (e: any) {
           audioPersistenceSucceeded = false
           if (e?.code === 'AUDIO_PERSISTENCE_FAILED') {
@@ -2454,7 +2648,14 @@ class WebLooper {
           setTimeout(() => notice.remove(), 16000)
         }
 
-        this.enterStemPracticeWithRealStems(decoded, tracksForPlayer)
+        this.enterStemPracticeWithRealStems(decoded, tracksForPlayer, localSavedSessionId ? {
+          id: localSavedSessionId,
+          fileName: decoded.fileName,
+          duration: decoded.duration,
+          stemNames: result.stems.map(s => s.name),
+          model: 'demucs-rs htdemucs_6s',
+          createdAt: Date.now(),
+        } : undefined)
       } catch (err: any) {
         if (simulatedInterval) {
           clearInterval(simulatedInterval)
@@ -2526,7 +2727,8 @@ class WebLooper {
    */
   private async enterStemPracticeWithRealStems(
     decoded: { fileName: string; duration: number },
-    realStems: Array<{ name: string; buffer: AudioBuffer }>
+    realStems: Array<{ name: string; buffer: AudioBuffer }>,
+    sessionMeta?: import('./stems/persistence').StemSessionMeta,
   ) {
     const stemArea = document.createElement('div')
     stemArea.id = 'stem-practice-area'
@@ -2595,11 +2797,19 @@ class WebLooper {
             <span>${realStems.length} stems</span>
           </div>
         </div>
-        <button id="exit-stem-real"
-                class="shrink-0 mt-1 text-sm flex items-center gap-2 px-4 py-2 rounded-2xl bg-zinc-900 hover:bg-zinc-800 border border-white/10 active:bg-zinc-950 transition">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
-          <span>Back</span>
-        </button>
+        <div class="flex items-center gap-2 shrink-0 mt-1">
+          <button id="stem-sync-drive-btn"
+                  class="hidden text-sm flex items-center gap-1.5 px-3 py-2 rounded-2xl bg-blue-500/10 text-blue-400 border border-blue-500/30 hover:bg-blue-500/20 active:bg-blue-500/30 transition"
+                  title="Upload this session to Google Drive">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            <span id="stem-sync-drive-label">Sync to Drive</span>
+          </button>
+          <button id="exit-stem-real"
+                  class="text-sm flex items-center gap-2 px-4 py-2 rounded-2xl bg-zinc-900 hover:bg-zinc-800 border border-white/10 active:bg-zinc-950 transition">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+            <span>Back</span>
+          </button>
+        </div>
       </div>
 
       <div class="grid grid-cols-1 lg:grid-cols-[1fr,320px] gap-6">
@@ -3101,6 +3311,55 @@ class WebLooper {
       }
     }
     document.addEventListener('keydown', keyHandler, { capture: false })
+
+    // ---------- Sync to Drive button ----------
+    const syncBtn = document.getElementById('stem-sync-drive-btn') as HTMLButtonElement | null
+    const syncLabel = document.getElementById('stem-sync-drive-label')
+    if (syncBtn && syncLabel && sessionMeta) {
+      // Check if user is signed in and session isn't already synced
+      import('./drive').then(({ isSignedIn, isSessionInCloud, uploadStemSession }) => {
+        if (!isSignedIn()) return
+        if (isSessionInCloud(sessionMeta.id)) {
+          // Already synced — show indicator
+          syncBtn.classList.remove('hidden')
+          syncBtn.disabled = true
+          syncBtn.className = syncBtn.className.replace('bg-blue-500/10', 'bg-emerald-500/10')
+            .replace('text-blue-400', 'text-emerald-400')
+            .replace('border-blue-500/30', 'border-emerald-500/30')
+            .replace('hover:bg-blue-500/20', '')
+            .replace('active:bg-blue-500/30', '')
+          syncLabel.textContent = 'Synced'
+          return
+        }
+
+        // Show the button — not yet synced
+        syncBtn.classList.remove('hidden')
+        syncBtn.addEventListener('click', async () => {
+          syncBtn.disabled = true
+          syncLabel.textContent = 'Syncing...'
+
+          try {
+            await uploadStemSession(sessionMeta, realStems, (p) => {
+              if (p.phase === 'encoding') syncLabel.textContent = p.message
+              else if (p.phase === 'uploading') syncLabel.textContent = p.message
+              else if (p.phase === 'done') {
+                syncLabel.textContent = 'Synced'
+                syncBtn.className = syncBtn.className.replace('bg-blue-500/10', 'bg-emerald-500/10')
+                  .replace('text-blue-400', 'text-emerald-400')
+                  .replace('border-blue-500/30', 'border-emerald-500/30')
+              } else if (p.phase === 'error') {
+                syncLabel.textContent = 'Sync failed'
+                syncBtn.disabled = false
+              }
+            })
+          } catch (err) {
+            console.error('[drive-sync] Manual sync failed:', err)
+            syncLabel.textContent = 'Sync failed'
+            syncBtn.disabled = false
+          }
+        })
+      }).catch(() => {})
+    }
 
     // ---------- Exit ----------
     document.getElementById('exit-stem-real')!.addEventListener('click', () => {
@@ -3856,6 +4115,92 @@ class WebLooper {
     if (this.currentView !== 'workspace') return
     this.els.shortcutsModal.classList.remove('flex')
     this.els.shortcutsModal.classList.add('hidden')
+  }
+
+  // ---------- Google Drive Sync ----------
+  private setupDriveSyncButton() {
+    const btn = document.getElementById('drive-sync-btn')
+    const label = document.getElementById('drive-sync-label')
+    if (!btn || !label) return
+
+    // Check initial auth state
+    import('./drive').then(({ isSignedIn, onAuthChange }) => {
+      this.updateDriveSyncUI(isSignedIn())
+      onAuthChange((signedIn) => this.updateDriveSyncUI(signedIn))
+    })
+
+    btn.addEventListener('click', async () => {
+      const { isSignedIn, signIn, signOut, fetchCloudSessions } = await import('./drive')
+
+      if (isSignedIn()) {
+        // Already signed in — offer sign out
+        if (confirm('Sign out from Google Drive sync?')) {
+          signOut()
+        }
+      } else {
+        // Sign in
+        try {
+          label!.textContent = 'Signing in...'
+          await signIn()
+          // Fetch cloud sessions after signing in
+          await fetchCloudSessions()
+          // Refresh the session lists
+          this.renderInitialPreviousStems()
+        } catch (err: any) {
+          console.error('[drive] Sign-in failed:', err)
+          label!.textContent = 'Sign in'
+        }
+      }
+    })
+  }
+
+  private updateDriveSyncUI(signedIn: boolean) {
+    const label = document.getElementById('drive-sync-label')
+    const btn = document.getElementById('drive-sync-btn')
+    if (!label || !btn) return
+
+    if (signedIn) {
+      label.textContent = 'Synced'
+      btn.classList.add('border-emerald-500/40', 'text-emerald-400')
+      btn.classList.remove('border-white/10')
+    } else {
+      label.textContent = 'Sign in'
+      btn.classList.remove('border-emerald-500/40', 'text-emerald-400')
+      btn.classList.add('border-white/10')
+    }
+  }
+
+  /**
+   * Upload a stem session to Google Drive in the background.
+   * Non-blocking — the user can continue using the app while upload happens.
+   */
+  private async backgroundUploadToCloud(
+    meta: import('./stems/persistence').StemSessionMeta,
+    stems: Array<{ name: string; buffer: AudioBuffer }>,
+  ) {
+    try {
+      const { isSignedIn, uploadStemSession } = await import('./drive')
+      if (!isSignedIn()) return
+
+      console.log('[drive-sync] Starting background upload for:', meta.fileName)
+      await uploadStemSession(meta, stems, (p) => {
+        // Update a subtle indicator in the UI
+        const label = document.getElementById('drive-sync-label')
+        if (label) {
+          if (p.phase === 'encoding') label.textContent = 'Encoding...'
+          else if (p.phase === 'uploading') label.textContent = 'Uploading...'
+          else if (p.phase === 'done') label.textContent = 'Synced'
+          else if (p.phase === 'error') {
+            label.textContent = 'Synced'
+            console.warn('[drive-sync]', p.message)
+          }
+        }
+      })
+    } catch (err) {
+      console.error('[drive-sync] Background upload failed:', err)
+      const label = document.getElementById('drive-sync-label')
+      if (label) label.textContent = 'Synced'
+    }
   }
 
   // ---------- Global ----------

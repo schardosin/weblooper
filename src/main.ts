@@ -2004,8 +2004,6 @@ class WebLooper {
     if (!section || !listEl) return
 
     try {
-      const localEntries = this.getRecentVideoEntries(20)
-
       // Also fetch cloud video states if signed in (lightweight JSON)
       let cloudStates: Record<string, any> = {}
       let userIsSignedIn = false
@@ -2016,6 +2014,47 @@ class WebLooper {
           cloudStates = await fetchCloudVideoStates()
         }
       } catch {}
+
+      // === Merge cloud updates into existing local video states ===
+      // This is the key fix: if a video already exists locally, we still pull
+      // newer loop points / presets from the cloud version (based on lastVisited
+      // or presence of presets). This makes saved loops appear on other devices.
+      if (userIsSignedIn && Object.keys(cloudStates).length > 0) {
+        try {
+          let localAll = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}')
+          let changed = false
+
+          for (const [id, cloudRaw] of Object.entries(cloudStates)) {
+            const cloud = sanitizeVideoState(cloudRaw)
+            const local = sanitizeVideoState(localAll[id] || {})
+
+            const cloudVisited = cloud.lastVisited || 0
+            const localVisited = local.lastVisited || 0
+
+            const cloudHasPresets = Array.isArray(cloud.presets) && cloud.presets.length > 0
+            const localHasPresets = Array.isArray(local.presets) && local.presets.length > 0
+
+            // Pull cloud data if it's newer, or if cloud has presets that local is missing
+            if (cloudVisited > localVisited || (cloudHasPresets && !localHasPresets)) {
+              localAll[id] = sanitizeVideoState({
+                ...local,
+                ...cloud,
+                lastVisited: Math.max(cloudVisited, localVisited, Date.now())
+              })
+              changed = true
+            }
+          }
+
+          if (changed) {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(localAll))
+          }
+        } catch (e) {
+          console.warn('[video-sync] Failed to merge cloud video states into local', e)
+        }
+      }
+
+      // Re-read local after possible merge so the list reflects fresh data
+      const localEntries = this.getRecentVideoEntries(20)
 
       const localIds = new Set(localEntries.map((e: any) => e.videoId))
       const cloudOnlyIds = Object.keys(cloudStates).filter(id => !localIds.has(id))

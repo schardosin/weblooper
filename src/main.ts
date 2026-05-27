@@ -497,7 +497,7 @@ class WebLooper {
 
         <footer class="border-t border-white/10 py-8 text-center text-xs text-zinc-500">
           Made with focus for musicians who practice seriously.<br>
-          Everything stays on your device. No accounts. No limits.
+          Your data stays private. Optionally sync to your Google Drive for access on any device.
         </footer>
       </div>
     `

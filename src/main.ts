@@ -1607,14 +1607,37 @@ class WebLooper {
           ? sess.youtubeVideoTitle 
           : (sess.fileName || 'Unknown session')
 
-        const cloudBadge = sess.source === 'cloud'
-          ? '<span class="text-[9px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20">cloud</span>'
-          : (userIsSignedIn && cloudIds.has(sess.id))
-            ? '<span class="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">synced</span>'
+        // Determine session state
+        const isLocal = sess.source === 'local'
+        const isSynced = isLocal && userIsSignedIn && cloudIds.has(sess.id)
+        const isCloudOnly = sess.source === 'cloud'
+        const isLocalOnly = isLocal && (!userIsSignedIn || !cloudIds.has(sess.id))
+
+        const cloudBadge = isCloudOnly
+          ? '<span class="badge-cloud text-[9px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20">cloud</span>'
+          : isSynced
+            ? '<span class="badge-synced text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">synced</span>'
             : ''
 
         // Show sync button for local sessions not yet in cloud (only if signed in)
-        const showSyncBtn = sess.source === 'local' && userIsSignedIn && !cloudIds.has(sess.id)
+        const showSyncBtn = isLocalOnly && userIsSignedIn
+
+        // Delete button text depends on state
+        let delBtnText: string
+        let delBtnClass: string
+        if (isSynced) {
+          // Local + synced: first action is "Remove from device" (no confirm)
+          delBtnText = 'Remove from device'
+          delBtnClass = 'del-init px-2 py-1 text-xs rounded-xl border border-white/10 text-zinc-400 hover:text-amber-400'
+        } else if (isCloudOnly) {
+          // Cloud only: "Delete" with confirm
+          delBtnText = 'Delete'
+          delBtnClass = 'del-init px-2 py-1 text-xs rounded-xl border border-white/10 text-zinc-400 hover:text-rose-400'
+        } else {
+          // Local only: "Delete" no confirm
+          delBtnText = 'Delete'
+          delBtnClass = 'del-init px-2 py-1 text-xs rounded-xl border border-white/10 text-zinc-400 hover:text-rose-400'
+        }
 
         row.innerHTML = `
           <div class="min-w-0">
@@ -1623,8 +1646,8 @@ class WebLooper {
           </div>
           <div class="flex items-center gap-2 shrink-0">
             ${showSyncBtn ? '<button class="sync-init px-2 py-1 text-xs rounded-xl bg-blue-500/10 text-blue-400 border border-blue-500/30 hover:bg-blue-500/20" title="Upload to Google Drive"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></button>' : ''}
-            <button class="load-init px-3 py-1 text-xs rounded-xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/20">${sess.source === 'cloud' ? 'Download' : 'Load'}</button>
-            <button class="del-init px-2 py-1 text-xs rounded-xl border border-white/10 text-zinc-400 hover:text-rose-400">Delete</button>
+            <button class="load-init px-3 py-1 text-xs rounded-xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/20">${isCloudOnly ? 'Download' : 'Load'}</button>
+            <button class="${delBtnClass}">${delBtnText}</button>
           </div>
         `
 
@@ -1664,14 +1687,67 @@ class WebLooper {
           }
         })
 
+        // Delete/Remove button handler
         row.querySelector('.del-init')?.addEventListener('click', async () => {
-          if (confirm(`Delete saved stems for "${sess.fileName}"?`)) {
-            if (sess.source === 'cloud') {
+          if (isSynced) {
+            // Local + synced → "Remove from device": delete local only, transform row to cloud-only
+            await deleteStemSession(sess.id)
+
+            // Transform the row in-place to a cloud-only row
+            const loadBtn = row.querySelector('.load-init') as HTMLButtonElement
+            const delBtn = row.querySelector('.del-init') as HTMLButtonElement
+            const badgeEl = row.querySelector('.badge-synced')
+            const syncBtn = row.querySelector('.sync-init')
+
+            // Update load button
+            if (loadBtn) loadBtn.textContent = 'Download'
+
+            // Remove synced badge, add cloud badge
+            if (badgeEl) {
+              badgeEl.className = 'text-[9px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20'
+              badgeEl.textContent = 'cloud'
+            }
+
+            // Remove sync button if present
+            if (syncBtn) syncBtn.remove()
+
+            // Transform delete button to cloud delete (with confirm)
+            delBtn.textContent = 'Delete'
+            delBtn.className = 'del-init px-2 py-1 text-xs rounded-xl border border-white/10 text-zinc-400 hover:text-rose-400'
+
+            // Replace the old event listener by cloning
+            const newDelBtn = delBtn.cloneNode(true) as HTMLButtonElement
+            delBtn.replaceWith(newDelBtn)
+            newDelBtn.addEventListener('click', async () => {
+              if (confirm(`Permanently delete "${sess.fileName || label}" from Google Drive?`)) {
+                const { deleteCloudSession } = await import('./drive')
+                await deleteCloudSession(sess.id)
+                row.remove()
+                if (listEl.children.length === 0) section.classList.add('hidden')
+              }
+            })
+
+            // Update the load button to download from cloud
+            const newLoadBtn = loadBtn.cloneNode(true) as HTMLButtonElement
+            loadBtn.replaceWith(newLoadBtn)
+            newLoadBtn.addEventListener('click', async () => {
+              const cloudSession = cloudSessions.find(cs => cs.id === sess.id)
+              if (cloudSession) {
+                await this.loadCloudSession(cloudSession)
+              }
+            })
+
+          } else if (isCloudOnly) {
+            // Cloud only → confirm then delete from Drive
+            if (confirm(`Permanently delete "${sess.fileName || label}" from Google Drive?`)) {
               const { deleteCloudSession } = await import('./drive')
               await deleteCloudSession(sess.id)
-            } else {
-              await deleteStemSession(sess.id)
+              row.remove()
+              if (listEl.children.length === 0) section.classList.add('hidden')
             }
+          } else {
+            // Local only → just delete, no confirm
+            await deleteStemSession(sess.id)
             row.remove()
             if (listEl.children.length === 0) section.classList.add('hidden')
           }
@@ -1699,12 +1775,19 @@ class WebLooper {
                 loaded.stems,
                 (p) => {
                   if (p.phase === 'done') {
-                    // Replace button with synced badge
+                    // Replace sync button with synced badge
                     syncInitBtn.remove()
                     const badge = document.createElement('span')
-                    badge.className = 'text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                    badge.className = 'badge-synced text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
                     badge.textContent = 'synced'
                     row.querySelector('.font-medium')?.appendChild(badge)
+
+                    // Update delete button to "Remove from device"
+                    const delBtn = row.querySelector('.del-init') as HTMLButtonElement | null
+                    if (delBtn) {
+                      delBtn.textContent = 'Remove from device'
+                      delBtn.className = 'del-init px-2 py-1 text-xs rounded-xl border border-white/10 text-zinc-400 hover:text-amber-400'
+                    }
                   }
                 },
               )

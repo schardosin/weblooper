@@ -740,7 +740,11 @@ class WebLooper {
                     <div class="mt-5">
                       <div class="flex items-baseline justify-between mb-2 px-0.5">
                         <div class="text-xs font-medium tracking-widest text-zinc-400">SPEED</div>
-                        <div id="speed-value" class="font-mono text-sm text-emerald-400">1.00×</div>
+                        <div class="flex items-center gap-1.5">
+                          <button id="speed-dec" class="w-6 h-6 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-white/10 text-zinc-300 text-xs font-bold flex items-center justify-center transition">−</button>
+                          <div id="speed-value" class="font-mono text-sm text-emerald-400 min-w-[3.2rem] text-center">1.00×</div>
+                          <button id="speed-inc" class="w-6 h-6 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-white/10 text-zinc-300 text-xs font-bold flex items-center justify-center transition">+</button>
+                        </div>
                       </div>
                       <div id="speed-chips" class="flex flex-wrap gap-1.5"></div>
                     </div>
@@ -776,7 +780,8 @@ class WebLooper {
             <div class="text-emerald-400 font-mono">]</div><div>Set loop end at current time</div>
             <div class="text-emerald-400 font-mono">L</div><div>Toggle looping</div>
             <div class="text-emerald-400 font-mono">R</div><div>Restart loop from start</div>
-            <div class="text-emerald-400 font-mono">1-6</div><div>Change playback speed</div>
+            <div class="text-emerald-400 font-mono">1-6</div><div>Change playback speed (presets)</div>
+            <div class="text-emerald-400 font-mono">− + =</div><div>Fine speed ±0.05</div>
             <div class="text-emerald-400 font-mono">← →</div><div>Nudge playhead ±1s</div>
             <div class="text-emerald-400 font-mono">ESC</div><div>Close this dialog</div>
           </div>
@@ -978,6 +983,18 @@ class WebLooper {
     e.endInput.addEventListener('change', () => {
       const val = parseTime(e.endInput.value)
       this.setEnd(clamp(val, this.start + 0.1, this.duration || 9999))
+    })
+
+    // Fine speed control (±0.05) - matching stems player UX
+    const speedDec = document.getElementById('speed-dec')!
+    const speedInc = document.getElementById('speed-inc')!
+    speedDec.addEventListener('click', () => {
+      const next = Math.max(0.5, Math.round((this.playbackRate - 0.05) * 100) / 100)
+      this.setPlaybackRate(next)
+    })
+    speedInc.addEventListener('click', () => {
+      const next = Math.min(2.0, Math.round((this.playbackRate + 0.05) * 100) / 100)
+      this.setPlaybackRate(next)
     })
 
     // Shortcuts modal
@@ -4291,6 +4308,17 @@ class WebLooper {
       case '4': this.setPlaybackRate(1.25); break
       case '5': this.setPlaybackRate(1.5); break
       case '6': this.setPlaybackRate(2); break
+      case '-': {
+        const next = Math.max(0.5, Math.round((this.playbackRate - 0.05) * 100) / 100)
+        this.setPlaybackRate(next)
+        break
+      }
+      case '=':
+      case '+': {
+        const next = Math.min(2.0, Math.round((this.playbackRate + 0.05) * 100) / 100)
+        this.setPlaybackRate(next)
+        break
+      }
     }
   }
 

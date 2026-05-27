@@ -465,8 +465,8 @@ class WebLooper {
               <div class="flex gap-4">
                 <div class="w-8 h-8 rounded-full bg-emerald-500/10 text-emerald-400 flex items-center justify-center font-mono text-xs flex-shrink-0 mt-0.5">04</div>
                 <div>
-                  <div class="font-medium">Come back anytime</div>
-                  <div class="text-zinc-400 mt-1">Everything is saved locally. Your recent videos and stem sessions are one click away on the home screen.</div>
+                  <div class="font-medium">Do once, use anywhere</div>
+                  <div class="text-zinc-400 mt-1">Sessions save locally and sync to your Google Drive. Practice on desktop, pick up on your phone or tablet.</div>
                 </div>
               </div>
             </div>

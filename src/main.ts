@@ -3000,7 +3000,11 @@ class WebLooper {
             <div class="mt-5">
               <div class="flex items-baseline justify-between mb-2 px-0.5">
                 <div class="text-xs font-medium tracking-widest text-zinc-400">SPEED</div>
-                <div id="stem-speed-real" class="font-mono text-sm text-emerald-400">${currentRate.toFixed(2)}×</div>
+                <div class="flex items-center gap-1.5">
+                  <button id="stem-speed-dec-real" class="w-6 h-6 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-white/10 text-zinc-300 text-xs font-bold flex items-center justify-center transition">−</button>
+                  <div id="stem-speed-real" class="font-mono text-sm text-emerald-400 min-w-[3.2rem] text-center">${currentRate.toFixed(2)}×</div>
+                  <button id="stem-speed-inc-real" class="w-6 h-6 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-white/10 text-zinc-300 text-xs font-bold flex items-center justify-center transition">+</button>
+                </div>
               </div>
               <div id="stem-speed-real-chips" class="flex flex-wrap gap-1.5"></div>
             </div>
@@ -3318,6 +3322,18 @@ class WebLooper {
       speedChips.appendChild(b)
     })
 
+    // Fine speed control (±0.05)
+    const speedDecBtn = document.getElementById('stem-speed-dec-real')!
+    const speedIncBtn = document.getElementById('stem-speed-inc-real')!
+    speedDecBtn.onclick = () => {
+      const next = Math.max(0.5, Math.round((stemPlayer.getCurrentPlaybackRate() - 0.05) * 100) / 100)
+      stemPlayer.setPlaybackRate(next); updateSpeed()
+    }
+    speedIncBtn.onclick = () => {
+      const next = Math.min(2.0, Math.round((stemPlayer.getCurrentPlaybackRate() + 0.05) * 100) / 100)
+      stemPlayer.setPlaybackRate(next); updateSpeed()
+    }
+
     // ---------- Mixer ----------
     const mixerC = document.getElementById('real-mixer-container')!
     const { createStemMixerUI } = await import('./stems')
@@ -3416,6 +3432,15 @@ class WebLooper {
         case '4': stemPlayer.setPlaybackRate(1.25); updateSpeed(); break
         case '5': stemPlayer.setPlaybackRate(1.5); updateSpeed(); break
         case '6': stemPlayer.setPlaybackRate(2); updateSpeed(); break
+        case '-': {
+          const next = Math.max(0.5, Math.round((stemPlayer.getCurrentPlaybackRate() - 0.05) * 100) / 100)
+          stemPlayer.setPlaybackRate(next); updateSpeed(); break
+        }
+        case '=':
+        case '+': {
+          const next = Math.min(2.0, Math.round((stemPlayer.getCurrentPlaybackRate() + 0.05) * 100) / 100)
+          stemPlayer.setPlaybackRate(next); updateSpeed(); break
+        }
       }
     }
     document.addEventListener('keydown', keyHandler, { capture: false })
@@ -3569,9 +3594,13 @@ class WebLooper {
 
       <!-- Speed chips (reuse same speeds) -->
       <div class="mt-6">
-        <div class="flex items-center gap-2 text-xs text-zinc-400 mb-2">
+        <div class="flex items-center justify-between text-xs text-zinc-400 mb-2">
           <span class="tracking-widest">SPEED</span>
-          <span id="stem-speed-value" class="font-mono text-emerald-400">1.00×</span>
+          <div class="flex items-center gap-1.5">
+            <button id="stem-speed-dec" class="w-6 h-6 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-white/10 text-zinc-300 text-xs font-bold flex items-center justify-center transition">−</button>
+            <span id="stem-speed-value" class="font-mono text-emerald-400 min-w-[3.2rem] text-center">1.00×</span>
+            <button id="stem-speed-inc" class="w-6 h-6 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-white/10 text-zinc-300 text-xs font-bold flex items-center justify-center transition">+</button>
+          </div>
         </div>
         <div id="stem-speed-chips" class="flex flex-wrap gap-1.5"></div>
       </div>
@@ -3622,6 +3651,18 @@ class WebLooper {
       })
       speedContainer.appendChild(btn)
     })
+
+    // Fine speed control (±0.05)
+    const speedDecBtnDemo = document.getElementById('stem-speed-dec')!
+    const speedIncBtnDemo = document.getElementById('stem-speed-inc')!
+    speedDecBtnDemo.onclick = () => {
+      const next = Math.max(0.5, Math.round((stemPlayer.getCurrentPlaybackRate() - 0.05) * 100) / 100)
+      stemPlayer.setPlaybackRate(next); updateSpeedUI()
+    }
+    speedIncBtnDemo.onclick = () => {
+      const next = Math.min(2.0, Math.round((stemPlayer.getCurrentPlaybackRate() + 0.05) * 100) / 100)
+      stemPlayer.setPlaybackRate(next); updateSpeedUI()
+    }
 
     function updateSpeedUI() {
       const current = stemPlayer.getCurrentPlaybackRate()
@@ -3721,6 +3762,15 @@ class WebLooper {
         case '4': stemPlayer.setPlaybackRate(1.25); updateSpeedUI(); break
         case '5': stemPlayer.setPlaybackRate(1.5); updateSpeedUI(); break
         case '6': stemPlayer.setPlaybackRate(2); updateSpeedUI(); break
+        case '-': {
+          const next = Math.max(0.5, Math.round((stemPlayer.getCurrentPlaybackRate() - 0.05) * 100) / 100)
+          stemPlayer.setPlaybackRate(next); updateSpeedUI(); break
+        }
+        case '=':
+        case '+': {
+          const next = Math.min(2.0, Math.round((stemPlayer.getCurrentPlaybackRate() + 0.05) * 100) / 100)
+          stemPlayer.setPlaybackRate(next); updateSpeedUI(); break
+        }
       }
     }
     document.addEventListener('keydown', keyHandler, { once: false })

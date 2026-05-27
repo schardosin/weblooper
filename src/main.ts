@@ -2887,7 +2887,7 @@ class WebLooper {
 
     stemPlayer.setLoop(loopStart, loopEnd)
     stemPlayer.setIsLooping(isLooping)
-    stemPlayer.setPlaybackRate(currentRate)
+    await stemPlayer.setPlaybackRate(currentRate)
 
     function persistStemState() {
       saveStemState({ start: loopStart, end: loopEnd, isLooping, playbackRate: currentRate, presets })

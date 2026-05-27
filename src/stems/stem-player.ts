@@ -7,10 +7,13 @@
  * - Per-stem independent gain, solo, mute.
  * - Emits high-frequency time updates for timeline / current time UI.
  * - Handles seamless looping when loop is active.
+ * - Pitch-preserved tempo control via SoundTouch time-stretching.
  *
  * This is deliberately decoupled from the YouTube path.
  * Later we can make WebLooper use this for audio files and the YT player for videos.
  */
+
+import { timeStretch } from '../audio/time-stretch'
 
 export interface StemTrack {
   name: string
@@ -30,10 +33,12 @@ export type StemPlayerEvent =
   | { type: 'pause' }
   | { type: 'ended' }
   | { type: 'loop-jump' }
+  | { type: 'stretching'; active: boolean }
 
 export class StemPlayer {
   private audioContext: AudioContext
-  private tracks: StemTrack[] = []
+  private tracks: StemTrack[] = []              // currently active buffers (original or stretched)
+  private originalTracks: StemTrack[] = []      // always holds the original unmodified buffers
   private states: Map<string, StemState> = new Map()
 
   // Web Audio graph
@@ -41,12 +46,11 @@ export class StemPlayer {
   private stemNodes: Map<string, {
     source: AudioBufferSourceNode | null
     gain: GainNode
-    // Future: filter nodes per stem for EQ
   }> = new Map()
 
   private isPlaying = false
   private startTime = 0 // context time when current playback segment started
-  private offset = 0 // current logical position in the audio when playback started
+  private offset = 0 // current logical position in the ORIGINAL audio timeline
 
   private loopStart = 0
   private loopEnd = 0
@@ -56,7 +60,9 @@ export class StemPlayer {
   private animationFrame: number | null = null
   private listeners: ((e: StemPlayerEvent) => void)[] = []
 
-  private duration = 0
+  private duration = 0 // original (un-stretched) duration
+  private isStretching = false
+  private stretchGeneration = 0 // incremented each time setPlaybackRate is called, to abort stale stretches
 
   constructor() {
     this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)()
@@ -71,6 +77,7 @@ export class StemPlayer {
   loadStems(stems: StemTrack[]) {
     this.stop()
 
+    this.originalTracks = stems
     this.tracks = stems
     this.duration = Math.max(...stems.map(s => s.buffer.duration))
 
@@ -102,7 +109,7 @@ export class StemPlayer {
   // ============================================
 
   play() {
-    if (this.isPlaying || this.tracks.length === 0) return
+    if (this.isPlaying || this.tracks.length === 0 || this.isStretching) return
 
     // Resume context if it was suspended (autoplay policy)
     if (this.audioContext.state === 'suspended') {
@@ -146,14 +153,58 @@ export class StemPlayer {
     }
   }
 
-  setPlaybackRate(rate: number) {
-    this.playbackRate = Math.max(0.25, Math.min(rate, 4.0))
+  async setPlaybackRate(rate: number) {
+    const newRate = Math.max(0.5, Math.min(rate, 2.0))
+    if (Math.abs(newRate - this.playbackRate) < 0.01) return
 
-    if (this.isPlaying) {
-      // Restart sources at new rate (Web Audio limitation)
-      const currentTime = this.getCurrentTime()
-      this.pause()
-      this.offset = currentTime
+    const wasPlaying = this.isPlaying
+    const currentTime = this.getCurrentTime()
+
+    if (wasPlaying) this.pause()
+
+    this.playbackRate = newRate
+    this.offset = currentTime
+
+    // Increment generation so any in-progress stretch from a prior call is discarded
+    const generation = ++this.stretchGeneration
+
+    // Time-stretch all stems to the new tempo (pitch-preserved)
+    if (Math.abs(newRate - 1.0) < 0.01) {
+      // Rate is ~1.0, use original buffers
+      this.tracks = this.originalTracks
+    } else {
+      // Compute stretched buffers
+      this.isStretching = true
+      this.emit({ type: 'stretching', active: true })
+
+      try {
+        const stretched: StemTrack[] = []
+        for (let i = 0; i < this.originalTracks.length; i++) {
+          // Yield between stems to keep UI responsive
+          await new Promise(resolve => setTimeout(resolve, 0))
+
+          // Abort if a newer call has superseded this one
+          if (this.stretchGeneration !== generation) return
+
+          const stretchedBuffer = timeStretch(this.originalTracks[i].buffer, newRate)
+          stretched.push({ name: this.originalTracks[i].name, buffer: stretchedBuffer })
+        }
+
+        // Final check before applying
+        if (this.stretchGeneration !== generation) return
+
+        this.tracks = stretched
+      } catch (err) {
+        console.error('[StemPlayer] Time-stretching failed, falling back to rate change:', err)
+        // Fallback: use original buffers with native playbackRate (will shift pitch)
+        this.tracks = this.originalTracks
+      }
+
+      this.isStretching = false
+      this.emit({ type: 'stretching', active: false })
+    }
+
+    if (wasPlaying) {
       this.play()
     }
   }
@@ -226,20 +277,26 @@ export class StemPlayer {
   private startAllSources(fromTime: number) {
     this.stopAllSources()
 
+    // Convert logical time (in original timeline) to buffer time (in stretched timeline)
+    const bufferOffset = this.logicalToBufferTime(fromTime)
+
     this.tracks.forEach(track => {
       const node = this.stemNodes.get(track.name)!
 
       const source = this.audioContext.createBufferSource()
       source.buffer = track.buffer
-      source.playbackRate.value = this.playbackRate
+      // Always play at native rate — stretching is already baked into the buffer
+      source.playbackRate.value = 1.0
       source.connect(node.gain)
 
       const startAt = this.audioContext.currentTime
-      const offsetInBuffer = Math.max(0, fromTime)
+      const offsetInBuffer = Math.max(0, bufferOffset)
 
-      // Play until end of buffer or loop point
+      // Play until end of buffer
       const remainingInBuffer = track.buffer.duration - offsetInBuffer
-      source.start(startAt, offsetInBuffer, remainingInBuffer)
+      if (remainingInBuffer > 0) {
+        source.start(startAt, offsetInBuffer, remainingInBuffer)
+      }
 
       node.source = source
 
@@ -267,6 +324,7 @@ export class StemPlayer {
     if (this.isLooping && current >= this.loopEnd - 0.05) {
       // Jump back to loop start
       this.offset = this.loopStart
+      this.startTime = this.audioContext.currentTime
       this.emit({ type: 'loop-jump' })
       this.startAllSources(this.loopStart)
     } else if (current >= this.duration - 0.1) {
@@ -302,11 +360,34 @@ export class StemPlayer {
   // Time tracking
   // ============================================
 
-  private getCurrentTime(): number {
+  /**
+   * Convert logical time (original timeline) to buffer time (stretched timeline).
+   * When tempo = 0.75, the buffer is longer: 4min becomes ~5.33min.
+   * Logical time 60s → buffer time 60s / 0.75 = 80s.
+   */
+  private logicalToBufferTime(logicalTime: number): number {
+    if (Math.abs(this.playbackRate - 1.0) < 0.01) return logicalTime
+    return logicalTime / this.playbackRate
+  }
+
+  /**
+   * Convert elapsed buffer time back to logical time.
+   * Buffer plays at 1.0 rate, but represents stretched audio.
+   * elapsed buffer time * playbackRate = logical time elapsed.
+   */
+  private bufferToLogicalTime(bufferElapsed: number): number {
+    if (Math.abs(this.playbackRate - 1.0) < 0.01) return bufferElapsed
+    return bufferElapsed * this.playbackRate
+  }
+
+  getCurrentTime(): number {
     if (!this.isPlaying) return this.offset
 
-    const elapsed = (this.audioContext.currentTime - this.startTime) * this.playbackRate
-    let t = this.offset + elapsed
+    // Buffer plays at rate 1.0 — elapsed wall clock time = elapsed buffer time
+    const bufferElapsed = this.audioContext.currentTime - this.startTime
+    // Convert to logical time
+    const logicalElapsed = this.bufferToLogicalTime(bufferElapsed)
+    let t = this.offset + logicalElapsed
 
     if (this.isLooping && t >= this.loopEnd) {
       // Wrap for display purposes
@@ -329,6 +410,7 @@ export class StemPlayer {
       // Check for loop boundary enforcement (defensive)
       if (this.isLooping && time >= this.loopEnd - 0.03) {
         this.offset = this.loopStart
+        this.startTime = this.audioContext.currentTime
         this.startAllSources(this.loopStart)
         this.emit({ type: 'loop-jump' })
       }
@@ -375,6 +457,10 @@ export class StemPlayer {
 
   isCurrentlyPlaying(): boolean {
     return this.isPlaying
+  }
+
+  getIsStretching(): boolean {
+    return this.isStretching
   }
 
   dispose() {

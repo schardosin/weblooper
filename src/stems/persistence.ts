@@ -53,13 +53,16 @@ function writeMetaList(list: StemSessionMeta[]) {
 
 /**
  * Save a completed stem separation session.
- * Returns the new session id.
+ * Returns the session id.
+ * If `overrideId` is provided, uses that instead of generating a new one
+ * (used when caching a cloud session locally to preserve the same ID).
  */
 export async function saveStemSession(
   partial: Omit<StemSessionMeta, 'id' | 'createdAt'>,
-  stems: Array<{ name: string; buffer: AudioBuffer }>
+  stems: Array<{ name: string; buffer: AudioBuffer }>,
+  overrideId?: string,
 ): Promise<string> {
-  const id = generateId()
+  const id = overrideId || generateId()
   const meta: StemSessionMeta = {
     id,
     fileName: partial.fileName,
@@ -73,10 +76,12 @@ export async function saveStemSession(
 
   // 1. Persist metadata
   const list = readMetaList()
+  // Remove any existing entry with same ID (in case of re-caching)
+  const filtered = list.filter(s => s.id !== id)
   // Keep most recent first, cap at 20 sessions
-  list.unshift(meta)
-  if (list.length > 20) list.length = 20
-  writeMetaList(list)
+  filtered.unshift(meta)
+  if (filtered.length > 20) filtered.length = 20
+  writeMetaList(filtered)
 
   // 2. Persist actual audio in OPFS
   const writtenStems: string[] = []

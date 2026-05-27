@@ -1754,7 +1754,7 @@ class WebLooper {
       })
 
       if (stems && stems.length > 0) {
-        // Also save to OPFS for future local access (cache)
+        // Also save to OPFS for future local access (cache), preserving the cloud session ID
         try {
           const { saveStemSession } = await import('./stems')
           await saveStemSession(
@@ -1767,6 +1767,7 @@ class WebLooper {
               youtubeVideoTitle: session.youtubeVideoTitle,
             },
             stems,
+            session.id,  // Preserve cloud ID so deduplication works
           )
         } catch (e) {
           console.warn('[drive-sync] Failed to cache cloud session locally:', e)

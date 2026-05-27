@@ -23,6 +23,9 @@ export interface StemSessionMeta {
   createdAt: number
   stemNames: string[]
   model: string
+
+  /** User-saved loop presets for this stem session (synced via Drive) */
+  presets?: import('./types').LoopPreset[]
 }
 
 const STORAGE_KEY = 'weblooper_stem_sessions_v1'
@@ -72,6 +75,7 @@ export async function saveStemSession(
     createdAt: Date.now(),
     stemNames: partial.stemNames,
     model: partial.model,
+    presets: partial.presets,
   }
 
   // 1. Persist metadata
@@ -295,5 +299,19 @@ export async function deleteStemSession(id: string): Promise<void> {
     await stemsDir.removeEntry(id, { recursive: true })
   } catch {
     // ignore if already gone
+  }
+}
+
+/**
+ * Update the saved presets for an existing stem session (used when user saves
+ * loops while in stem practice view). This keeps presets in the central meta
+ * so they travel with cloud sync.
+ */
+export function updateStemSessionPresets(id: string, presets: import('./types').LoopPreset[]): void {
+  const list = readMetaList()
+  const idx = list.findIndex(m => m.id === id)
+  if (idx >= 0) {
+    list[idx] = { ...list[idx], presets: [...presets] }
+    writeMetaList(list)
   }
 }

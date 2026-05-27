@@ -1905,6 +1905,7 @@ class WebLooper {
               model: session.model,
               youtubeVideoId: session.youtubeVideoId,
               youtubeVideoTitle: session.youtubeVideoTitle,
+              presets: session.presets,   // Carry saved loops/presets from cloud
             },
             stems,
             session.id,  // Preserve cloud ID so deduplication works
@@ -3066,7 +3067,15 @@ class WebLooper {
     let loopEnd = savedState?.end ?? decoded.duration
     let isLooping = savedState?.isLooping ?? false
     let currentRate = savedState?.playbackRate ?? 1
-    let presets: LoopPreset[] = savedState?.presets ?? []
+
+    // Seed presets from central session meta if available (enables cross-device sync via Drive)
+    // Fall back to (or merge with) the per-stem local practice state.
+    let presets: LoopPreset[] = []
+    if (sessionMeta?.presets && sessionMeta.presets.length > 0) {
+      presets = [...sessionMeta.presets]
+    } else if (savedState?.presets) {
+      presets = [...savedState.presets]
+    }
 
     stemPlayer.setLoop(loopStart, loopEnd)
     stemPlayer.setIsLooping(isLooping)
@@ -3355,11 +3364,29 @@ class WebLooper {
       presets.unshift(newPreset)
       renderStemPresets()
       persistStemState()
+
+      // Also persist to central StemSessionMeta so presets travel with cloud sync
+      if (sessionMeta?.id) {
+        import('./stems').then(({ updateStemSessionPresets }) => {
+          updateStemSessionPresets(sessionMeta.id, presets)
+
+          import('./drive').then(({ isSignedIn, isSessionInCloud, updateCloudStemMeta }) => {
+            if (isSignedIn() && isSessionInCloud(sessionMeta.id)) {
+              updateCloudStemMeta(sessionMeta.id, { presets }).catch(() => {})
+            }
+          }).catch(() => {})
+        }).catch((e) => {
+          console.warn('[stems] Failed to sync preset to central meta / cloud', e)
+        })
+      }
     }
 
     // ---------- Initial UI state ----------
     updateLoopUI()
     renderStemPresets()
+
+    // Ensure practice local state (including any cloud-seeded presets) is persisted
+    persistStemState()
 
     // ---------- Timeline interaction ----------
     timeline.addEventListener('click', (e) => {

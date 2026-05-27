@@ -423,3 +423,68 @@ export async function deleteCloudVideoState(videoId: string): Promise<void> {
 export function isVideoInCloud(videoId: string): boolean {
   return !!(videoStatesCache?.states?.[videoId])
 }
+
+// ============================================
+// Stem Session Meta Updates (for syncing presets etc. without re-uploading audio)
+// ============================================
+
+/**
+ * Update metadata for an existing cloud stem session (e.g. to push newly saved
+ * loop presets). This updates both the per-session meta.json and the root manifest.
+ */
+export async function updateCloudStemMeta(
+  sessionId: string,
+  updates: Partial<StemSessionMeta>
+): Promise<void> {
+  if (!isSignedIn()) return
+
+  try {
+    const token = await getValidToken()
+
+    // Find session in manifest
+    const sessionIndex = manifestCache?.sessions.findIndex(s => s.id === sessionId) ?? -1
+    if (sessionIndex < 0 || !manifestCache) {
+      console.warn('[drive-sync] Cannot update meta for unknown cloud session', sessionId)
+      return
+    }
+
+    const session = manifestCache.sessions[sessionIndex]
+    const updatedSession: CloudSession = {
+      ...session,
+      ...updates,
+      // Preserve critical fields
+      driveFolderId: session.driveFolderId,
+    }
+
+    manifestCache.sessions[sessionIndex] = updatedSession
+
+    // Re-upload the small meta.json inside the session folder
+    if (session.driveFolderId) {
+      const metaPayload = {
+        id: updatedSession.id,
+        fileName: updatedSession.fileName,
+        youtubeVideoId: updatedSession.youtubeVideoId,
+        youtubeVideoTitle: updatedSession.youtubeVideoTitle,
+        duration: updatedSession.duration,
+        createdAt: updatedSession.createdAt,
+        stemNames: updatedSession.stemNames,
+        model: updatedSession.model,
+        presets: updatedSession.presets,
+      }
+      await drive.uploadFile(
+        token,
+        'meta.json',
+        JSON.stringify(metaPayload, null, 2),
+        'application/json',
+        session.driveFolderId
+      )
+    }
+
+    // Save updated manifest
+    await saveManifest(token)
+
+    console.log('[drive-sync] Updated cloud stem meta for', sessionId)
+  } catch (err) {
+    console.error('[drive-sync] Failed to update cloud stem meta:', err)
+  }
+}

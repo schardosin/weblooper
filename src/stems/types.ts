@@ -88,3 +88,13 @@ export interface ProcessedAudioMeta {
   model: string
   createdAt: number
 }
+
+/**
+ * A user-saved loop preset (used in both video and stem practice views).
+ */
+export interface LoopPreset {
+  id: string
+  name: string
+  start: number
+  end: number
+}

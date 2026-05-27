@@ -13,6 +13,7 @@ export {
   listStemSessions,
   deleteStemSession,
   findStemSessionForYouTubeVideo,
+  updateStemSessionPresets,
   type StemSessionMeta,
 } from './persistence'
 

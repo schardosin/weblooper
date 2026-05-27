@@ -5,6 +5,7 @@ export {
   fetchCloudSessions,
   deleteCloudSession,
   isSessionInCloud,
+  updateCloudStemMeta,
   // Video state sync (cross-device recent videos + loop settings)
   fetchCloudVideoStates,
   uploadVideoStates,

@@ -43,6 +43,7 @@ jobs:
         run: npm run build
         env:
           GITHUB_PAGES: "true"   # Tells Vite to use base: '/weblooper/'
+          VITE_GOOGLE_CLIENT_ID: ${{ vars.VITE_GOOGLE_CLIENT_ID }}
 
       - name: Setup Pages
         uses: actions/configure-pages@v4

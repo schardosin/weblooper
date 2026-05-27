@@ -823,7 +823,8 @@ class WebLooper {
 
     // Wire workspace back button
     document.getElementById('workspace-back-btn')?.addEventListener('click', () => {
-      this.navigateTo('landing')
+      // Hard navigation to landing — guarantees all audio/iframes are killed
+      window.location.href = window.location.pathname
     })
 
     // Wire Google Drive sync button

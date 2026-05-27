@@ -212,7 +212,10 @@ class WebLooper {
   constructor() {
     // Kill any orphaned YouTube iframes that might survive from a previous page session
     // (e.g. browser bfcache restoring the page with audio still playing)
-    document.querySelectorAll('iframe[src*="youtube"]').forEach(el => el.remove())
+    document.querySelectorAll('iframe[src*="youtube"], iframe[src*="youtu"]').forEach(el => {
+      try { (el as HTMLIFrameElement).src = 'about:blank' } catch {}
+      el.remove()
+    })
 
     this.route()
     this.bindGlobalEvents()
@@ -224,8 +227,12 @@ class WebLooper {
         // Page was restored from bfcache — stop any playing audio
         if (this.player) {
           try { this.player.pauseVideo() } catch {}
+          try { this.player.stopVideo() } catch {}
         }
-        document.querySelectorAll('iframe[src*="youtube"]').forEach(el => el.remove())
+        document.querySelectorAll('iframe[src*="youtube"], iframe[src*="youtu"]').forEach(el => {
+          try { (el as HTMLIFrameElement).src = 'about:blank' } catch {}
+          el.remove()
+        })
       }
     })
   }
@@ -511,6 +518,12 @@ class WebLooper {
         </footer>
       </div>
     `
+
+    // Final safety: ensure no YouTube iframes survived the DOM replacement
+    document.querySelectorAll('iframe[src*="youtube"], iframe[src*="youtu"]').forEach(el => {
+      try { (el as HTMLIFrameElement).src = 'about:blank' } catch {}
+      el.remove()
+    })
 
     this.setupLandingNavigation()
   }
@@ -3742,6 +3755,17 @@ class WebLooper {
     if (this.player) {
       try { this.player.pauseVideo() } catch {}
       try { this.player.stopVideo() } catch {}
+    }
+
+    // Force-kill YouTube iframe audio by blanking src before any DOM removal.
+    // This is the most reliable way to stop YouTube audio — the iframe's media
+    // pipeline shuts down immediately when src changes to about:blank.
+    document.querySelectorAll('iframe[src*="youtube"], iframe[src*="youtu"]').forEach(el => {
+      try { (el as HTMLIFrameElement).src = 'about:blank' } catch {}
+      el.remove()
+    })
+
+    if (this.player) {
       try { this.player.destroy() } catch {}
       this.player = null
     }
@@ -3765,9 +3789,6 @@ class WebLooper {
     }
     // Remove stem mixer container
     document.getElementById('youtube-stem-mixer-container')?.remove()
-
-    // Also remove any lingering YouTube iframes (belt-and-suspenders)
-    document.querySelectorAll('iframe[src*="youtube"]').forEach(el => el.remove())
 
     // Reset timeline so it rebuilds cleanly for next video
     if (this.els?.timeline) {

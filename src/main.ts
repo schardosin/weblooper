@@ -3079,6 +3079,12 @@ class WebLooper {
       startInput.value = formatTime(loopStart)
       endInput.value = formatTime(loopEnd)
       timelineStartLabel.textContent = formatTime(loopStart)
+
+      // Update restart button label based on loop state
+      const rLabel = restartBtn.querySelector('span:last-child')
+      if (rLabel) {
+        rLabel.textContent = isLooping ? 'Restart Loop' : 'Restart'
+      }
     }
 
     function applyLoopToPlayer() {
@@ -3239,7 +3245,7 @@ class WebLooper {
     // ---------- Transport ----------
     playBtn.addEventListener('click', () => stemPlayer.togglePlayPause())
     restartBtn.addEventListener('click', () => {
-      stemPlayer.restartFromLoopStart()
+      stemPlayer.restart()
     })
 
     loopToggleBtn.addEventListener('click', () => {
@@ -3403,7 +3409,7 @@ class WebLooper {
           break
         case 'r':
           ev.preventDefault()
-          stemPlayer.restartFromLoopStart()
+          stemPlayer.restart()
           break
         case 'arrowleft':
           ev.preventDefault()
@@ -3581,7 +3587,7 @@ class WebLooper {
             </button>
             <button id="stem-restart-loop"
                     class="flex-1 py-3 rounded-2xl bg-zinc-800 hover:bg-zinc-700 font-semibold border border-white/10">
-              ↺ Restart Loop
+              ↺ Restart
             </button>
           </div>
 
@@ -3634,7 +3640,7 @@ class WebLooper {
     const restartBtn = document.getElementById('stem-restart-loop')!
 
     playBtn.addEventListener('click', () => stemPlayer.togglePlayPause())
-    restartBtn.addEventListener('click', () => stemPlayer.restartFromLoopStart())
+    restartBtn.addEventListener('click', () => stemPlayer.restart())
 
     // === Speed chips ===
     const speedContainer = document.getElementById('stem-speed-chips')!
@@ -3754,7 +3760,7 @@ class WebLooper {
           break
         case 'r':
           ev.preventDefault()
-          stemPlayer.restartFromLoopStart()
+          stemPlayer.restart()
           break
         case '1': stemPlayer.setPlaybackRate(0.5); updateSpeedUI(); break
         case '2': stemPlayer.setPlaybackRate(0.75); updateSpeedUI(); break
@@ -3949,7 +3955,8 @@ class WebLooper {
 
   private restartLoop() {
     if (!this.playerReady) return
-    this.seekTo(this.start)
+    const target = this.isLooping ? this.start : 0
+    this.seekTo(target)
     setTimeout(() => {
       if (this.player) this.player.playVideo()
     }, 30)
@@ -4099,6 +4106,18 @@ class WebLooper {
     } else {
       btn.textContent = 'LOOP OFF'
       btn.className = 'px-5 py-1 text-xs font-bold rounded-full border transition active:scale-95 bg-emerald-500/10 border-emerald-500/40 text-emerald-400'
+    }
+    this.updateRestartButtonUI()
+  }
+
+  private updateRestartButtonUI() {
+    const btn = this.els.restartLoop
+    if (!btn) return
+    const spans = btn.querySelectorAll('span')
+    if (spans.length >= 2) {
+      spans[1].textContent = this.isLooping ? 'Restart Loop' : 'Restart'
+    } else {
+      btn.textContent = this.isLooping ? '↺ Restart Loop' : '↺ Restart'
     }
   }
 

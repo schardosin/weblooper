@@ -223,6 +223,16 @@ export class StemPlayer {
     if (!this.isPlaying) this.play()
   }
 
+  /**
+   * Restart: when looping, from loopStart; otherwise from beginning of song (0).
+   * Ensures playback is started after seek.
+   */
+  restart() {
+    const target = this.isLooping ? this.loopStart : 0
+    this.seek(target)
+    if (!this.isPlaying) this.play()
+  }
+
   stop() {
     this.pause()
     this.offset = 0

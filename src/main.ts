@@ -210,6 +210,10 @@ class WebLooper {
   }
 
   constructor() {
+    // Kill any orphaned YouTube iframes that might survive from a previous page session
+    // (e.g. browser bfcache restoring the page with audio still playing)
+    document.querySelectorAll('iframe[src*="youtube"]').forEach(el => el.remove())
+
     this.route()
     this.bindGlobalEvents()
     window.addEventListener('hashchange', () => this.route())
@@ -221,6 +225,7 @@ class WebLooper {
         if (this.player) {
           try { this.player.pauseVideo() } catch {}
         }
+        document.querySelectorAll('iframe[src*="youtube"]').forEach(el => el.remove())
       }
     })
   }
@@ -255,13 +260,8 @@ class WebLooper {
       return
     }
     this.currentView = 'landing'
-    // Clean up player if active
-    this.stopTimeMonitor()
-    if (this.player) {
-      try { this.player.destroy() } catch {}
-      this.player = null
-      this.playerReady = false
-    }
+    // Fully stop and clean up any active video/audio
+    this.unloadVideo()
     this.renderLanding()
   }
 
@@ -3740,6 +3740,8 @@ class WebLooper {
   private unloadVideo() {
     this.stopTimeMonitor()
     if (this.player) {
+      try { this.player.pauseVideo() } catch {}
+      try { this.player.stopVideo() } catch {}
       try { this.player.destroy() } catch {}
       this.player = null
     }
@@ -3764,11 +3766,13 @@ class WebLooper {
     // Remove stem mixer container
     document.getElementById('youtube-stem-mixer-container')?.remove()
 
+    // Also remove any lingering YouTube iframes (belt-and-suspenders)
+    document.querySelectorAll('iframe[src*="youtube"]').forEach(el => el.remove())
+
     // Reset timeline so it rebuilds cleanly for next video
-    const tl = this.els.timeline
-    if (tl) {
-      tl.innerHTML = ''
-      delete tl.dataset.initialized
+    if (this.els?.timeline) {
+      this.els.timeline.innerHTML = ''
+      delete this.els.timeline.dataset.initialized
     }
   }
 

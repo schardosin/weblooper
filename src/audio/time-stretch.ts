@@ -103,23 +103,46 @@ export function timeStretch(buffer: AudioBuffer, tempo: number, pitchSemitones: 
   }
 
   // Assemble output into an AudioBuffer
-  const outputLength = totalFrames
-  const ctx = new OfflineAudioContext(numChannels, outputLength, sampleRate)
-  const outputBuffer = ctx.createBuffer(numChannels, outputLength, sampleRate)
+  // When doing pure pitch shift (tempo=1.0), SoundTouch's WSOLA introduces a small
+  // latency at the start (the algorithm needs to fill its overlap window before producing
+  // meaningful output). This causes the output to be shifted forward in time.
+  // We compensate by detecting and skipping the leading latency.
+  let skipFrames = 0
+  if (!needsTempo && needsPitch && totalFrames > originalLength) {
+    // The excess frames are the latency — skip them from the beginning
+    skipFrames = totalFrames - originalLength
+  }
+
+  const finalLength = needsTempo ? totalFrames : originalLength
+  const ctx = new OfflineAudioContext(numChannels, finalLength, sampleRate)
+  const outputBuffer = ctx.createBuffer(numChannels, finalLength, sampleRate)
 
   const leftOut = outputBuffer.getChannelData(0)
   const rightOut = numChannels > 1 ? outputBuffer.getChannelData(1) : null
 
-  let writeOffset = 0
+  let writeOffset = 0  // position in the final buffer
+  let skipped = 0
+
   for (const chunk of outputChunks) {
     const frames = chunk.length / 2
-    for (let i = 0; i < frames; i++) {
-      leftOut[writeOffset + i] = chunk[i * 2]
-      if (rightOut) {
-        rightOut[writeOffset + i] = chunk[i * 2 + 1]
-      }
+    let startFrame = 0
+
+    // Skip leading frames (SoundTouch latency)
+    if (skipped < skipFrames) {
+      const toSkip = Math.min(frames, skipFrames - skipped)
+      startFrame = toSkip
+      skipped += toSkip
     }
-    writeOffset += frames
+
+    for (let i = startFrame; i < frames && writeOffset < finalLength; i++) {
+      leftOut[writeOffset] = chunk[i * 2]
+      if (rightOut) {
+        rightOut[writeOffset] = chunk[i * 2 + 1]
+      }
+      writeOffset++
+    }
+
+    if (writeOffset >= finalLength) break
   }
 
   return outputBuffer

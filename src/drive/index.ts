@@ -11,10 +11,17 @@ export {
   uploadVideoStates,
   deleteCloudVideoState,
   isVideoInCloud,
+  // Pitch cache sync
+  uploadPitchRawAudio,
+  uploadPitchedAudio,
+  downloadPitchedAudio,
+  downloadPitchRawAudio,
+  getPitchCacheEntry,
 } from './sync'
 export type {
   CloudSession,
   UploadProgress,
   DownloadProgress,
   CloudVideoState,
+  PitchCacheCloudEntry,
 } from './sync'

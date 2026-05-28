@@ -4066,6 +4066,12 @@ class WebLooper {
    * Handle a pitch/key change request for the current YouTube video.
    * If pitch is 0, stop pitch playback and unmute YouTube.
    * Otherwise, load (or generate) the pitch-shifted audio and play it synced to video.
+   *
+   * Priority order:
+   * 1. Local OPFS cache (instant)
+   * 2. Google Drive (download if available)
+   * 3. Generate from raw audio (local or Drive)
+   * 4. Record audio first, then generate
    */
   private async handleVideoPitchChange(semitones: number) {
     if (!this.currentVideoId) return
@@ -4080,11 +4086,10 @@ class WebLooper {
 
     const videoId = this.currentVideoId
 
-    // Check if we already have this pitch cached
-    const { hasPitchedAudio, loadPitchedAudio, hasRawAudio, loadRawAudio, saveRawAudio } = await import('./audio/pitch-cache')
+    // Check if we already have this pitch cached locally
+    const { hasPitchedAudio, loadPitchedAudio, hasRawAudio, loadRawAudio, saveRawAudio, savePitchedAudio } = await import('./audio/pitch-cache')
 
     if (hasPitchedAudio(videoId, semitones)) {
-      // Already generated — load and play
       const opusData = await loadPitchedAudio(videoId, semitones)
       if (opusData) {
         const buffer = await this.decodeOpusToBuffer(opusData)
@@ -4094,39 +4099,78 @@ class WebLooper {
       }
     }
 
-    // Check if raw audio exists (need it to generate the pitch-shifted version)
-    if (!hasRawAudio(videoId)) {
-      // Need to record the audio first — show dialog
-      const shouldRecord = await this.showPitchRecordingDialog()
-      if (!shouldRecord) return
+    // Check Google Drive for the pitched file
+    try {
+      const { isSignedIn, getPitchCacheEntry, downloadPitchedAudio, downloadPitchRawAudio } = await import('./drive')
+      if (isSignedIn()) {
+        const cloudEntry = getPitchCacheEntry(videoId)
 
-      // Record the audio
-      const rawBuffer = await this.recordRawAudioForPitchShift(videoId)
-      if (!rawBuffer) return
+        // Try downloading the exact pitch from Drive
+        if (cloudEntry?.generatedKeys.includes(semitones)) {
+          const pitchValueEl = document.getElementById('pitch-value')
+          if (pitchValueEl) pitchValueEl.textContent = '...'
 
-      // Encode and save raw audio
-      const { encodeToOpusWebM } = await import('./audio/opus-encoder')
-      const rawOpus = await encodeToOpusWebM(rawBuffer, { bitrate: 128_000 })
-      await saveRawAudio(videoId, rawOpus, rawBuffer.duration)
+          const opusData = await downloadPitchedAudio(videoId, semitones)
+          if (opusData) {
+            // Save locally for future use
+            await savePitchedAudio(videoId, semitones, opusData)
+            const buffer = await this.decodeOpusToBuffer(opusData)
+            this.videoPitch = semitones
+            this.startPitchPlayback(buffer)
+            return
+          }
+        }
 
-      // Now generate the requested pitch
-      await this.generateAndPlayPitchedAudio(videoId, semitones, rawBuffer)
-      return
+        // Try downloading raw audio from Drive to generate locally
+        if (!hasRawAudio(videoId) && cloudEntry?.hasRaw) {
+          const pitchValueEl = document.getElementById('pitch-value')
+          if (pitchValueEl) pitchValueEl.textContent = '...'
+
+          const rawOpusData = await downloadPitchRawAudio(videoId)
+          if (rawOpusData) {
+            await saveRawAudio(videoId, rawOpusData, cloudEntry.duration)
+            const rawBuffer = await this.decodeOpusToBuffer(rawOpusData)
+            await this.generateAndPlayPitchedAudio(videoId, semitones, rawBuffer)
+            return
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('[pitch] Drive check failed, falling back to local:', err)
     }
 
-    // Raw exists — load it, generate the pitch, save and play
-    const rawOpusData = await loadRawAudio(videoId)
-    if (!rawOpusData) {
-      console.error('[pitch] Raw audio metadata says exists but could not load')
-      return
+    // Check if raw audio exists locally
+    if (hasRawAudio(videoId)) {
+      const rawOpusData = await loadRawAudio(videoId)
+      if (rawOpusData) {
+        const rawBuffer = await this.decodeOpusToBuffer(rawOpusData)
+        await this.generateAndPlayPitchedAudio(videoId, semitones, rawBuffer)
+        return
+      }
     }
 
-    const rawBuffer = await this.decodeOpusToBuffer(rawOpusData)
+    // Nothing available — need to record the audio first
+    const shouldRecord = await this.showPitchRecordingDialog()
+    if (!shouldRecord) return
+
+    const rawBuffer = await this.recordRawAudioForPitchShift(videoId)
+    if (!rawBuffer) return
+
+    // Encode and save raw audio locally
+    const { encodeToOpusWebM } = await import('./audio/opus-encoder')
+    const rawOpus = await encodeToOpusWebM(rawBuffer, { bitrate: 128_000 })
+    await saveRawAudio(videoId, rawOpus, rawBuffer.duration)
+
+    // Background upload raw to Drive
+    this.backgroundUploadPitchRaw(videoId, rawOpus, rawBuffer.duration)
+
+    // Generate the requested pitch
     await this.generateAndPlayPitchedAudio(videoId, semitones, rawBuffer)
   }
 
   /**
    * Generate a pitch-shifted version from raw audio, save it, and start playback.
+   * Also uploads to Drive in the background.
    */
   private async generateAndPlayPitchedAudio(videoId: string, semitones: number, rawBuffer: AudioBuffer) {
     // Show a brief generating indicator
@@ -4145,6 +4189,9 @@ class WebLooper {
       const opusData = await encodeToOpusWebM(shifted, { bitrate: 128_000 })
       await savePitchedAudio(videoId, semitones, opusData)
 
+      // Background upload to Drive
+      this.backgroundUploadPitchedAudio(videoId, semitones, opusData)
+
       // Start playback
       this.videoPitch = semitones
       this.startPitchPlayback(shifted)
@@ -4153,6 +4200,28 @@ class WebLooper {
     } catch (err) {
       console.error('[pitch] Failed to generate pitch-shifted audio:', err)
       if (pitchValueEl) pitchValueEl.textContent = 'ERR'
+    }
+  }
+
+  /** Background upload raw audio to Drive (non-blocking). */
+  private async backgroundUploadPitchRaw(videoId: string, opusData: ArrayBuffer, duration: number) {
+    try {
+      const { isSignedIn, uploadPitchRawAudio } = await import('./drive')
+      if (!isSignedIn()) return
+      await uploadPitchRawAudio(videoId, opusData, duration)
+    } catch (err) {
+      console.warn('[pitch] Background raw upload failed:', err)
+    }
+  }
+
+  /** Background upload pitched audio to Drive (non-blocking). */
+  private async backgroundUploadPitchedAudio(videoId: string, semitones: number, opusData: ArrayBuffer) {
+    try {
+      const { isSignedIn, uploadPitchedAudio } = await import('./drive')
+      if (!isSignedIn()) return
+      await uploadPitchedAudio(videoId, semitones, opusData)
+    } catch (err) {
+      console.warn('[pitch] Background pitch upload failed:', err)
     }
   }
 

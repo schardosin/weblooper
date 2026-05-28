@@ -27,9 +27,18 @@ export interface CloudSession extends StemSessionMeta {
   isLocal?: boolean
 }
 
+export interface PitchCacheCloudEntry {
+  videoId: string
+  duration: number
+  driveFolderId: string
+  hasRaw: boolean
+  generatedKeys: number[]
+}
+
 interface CloudManifest {
   version: number
   sessions: CloudSession[]
+  pitchCache?: PitchCacheCloudEntry[]
 }
 
 // Cache the manifest in memory to avoid repeated fetches
@@ -514,5 +523,186 @@ export async function updateCloudStemMeta(
     console.log('[drive-sync] Updated cloud stem meta for', sessionId)
   } catch (err) {
     console.error('[drive-sync] Failed to update cloud stem meta:', err)
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pitch Cache Sync
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Cache the pitch-cache parent folder ID
+let pitchCacheFolderId: string | null = null
+
+/**
+ * Get (or create) the "pitch-cache" folder inside the WebLooper app folder.
+ */
+async function getPitchCacheFolder(token: string): Promise<string> {
+  if (pitchCacheFolderId) return pitchCacheFolderId
+
+  const appFolder = await drive.getAppFolder(token)
+  const existing = await drive.findFileByName(token, 'pitch-cache', appFolder)
+  if (existing) {
+    pitchCacheFolderId = existing.id
+    return pitchCacheFolderId
+  }
+
+  pitchCacheFolderId = await drive.createFolder(token, 'pitch-cache', appFolder)
+  return pitchCacheFolderId
+}
+
+/**
+ * Get (or create) the folder for a specific video inside pitch-cache.
+ */
+async function getVideoPitchFolder(token: string, videoId: string): Promise<string> {
+  const parentId = await getPitchCacheFolder(token)
+
+  // Check if folder already exists in manifest
+  const entry = manifestCache?.pitchCache?.find(e => e.videoId === videoId)
+  if (entry?.driveFolderId) return entry.driveFolderId
+
+  // Check Drive
+  const existing = await drive.findFileByName(token, videoId, parentId)
+  if (existing) return existing.id
+
+  // Create it
+  return await drive.createFolder(token, videoId, parentId)
+}
+
+/**
+ * Get the pitch cache cloud entry for a video (from cached manifest).
+ * Call fetchCloudSessions() first if manifest hasn't been loaded yet.
+ */
+export function getPitchCacheEntry(videoId: string): PitchCacheCloudEntry | undefined {
+  return manifestCache?.pitchCache?.find(e => e.videoId === videoId)
+}
+
+/**
+ * Upload raw captured audio for a video to Google Drive.
+ * Call this in the background after recording + saving locally.
+ */
+export async function uploadPitchRawAudio(videoId: string, opusData: ArrayBuffer, duration: number): Promise<void> {
+  if (!isSignedIn()) return
+
+  try {
+    const token = await getValidToken()
+    const folderId = await getVideoPitchFolder(token, videoId)
+
+    await drive.uploadFile(token, 'raw.webm', opusData, 'audio/webm', folderId)
+
+    // Update manifest
+    if (!manifestCache) manifestCache = { version: 1, sessions: [] }
+    if (!manifestCache.pitchCache) manifestCache.pitchCache = []
+
+    const idx = manifestCache.pitchCache.findIndex(e => e.videoId === videoId)
+    if (idx >= 0) {
+      manifestCache.pitchCache[idx].hasRaw = true
+      manifestCache.pitchCache[idx].driveFolderId = folderId
+      manifestCache.pitchCache[idx].duration = duration
+    } else {
+      manifestCache.pitchCache.push({
+        videoId,
+        duration,
+        driveFolderId: folderId,
+        hasRaw: true,
+        generatedKeys: [],
+      })
+    }
+
+    await saveManifest(token)
+    console.log(`[drive-sync] Uploaded pitch raw audio for ${videoId}`)
+  } catch (err) {
+    console.error('[drive-sync] Failed to upload pitch raw audio:', err)
+  }
+}
+
+/**
+ * Upload a pitch-shifted audio file for a video to Google Drive.
+ * Call this in the background after generating + saving locally.
+ */
+export async function uploadPitchedAudio(videoId: string, semitones: number, opusData: ArrayBuffer): Promise<void> {
+  if (!isSignedIn()) return
+
+  try {
+    const token = await getValidToken()
+    const folderId = await getVideoPitchFolder(token, videoId)
+
+    const sign = semitones > 0 ? '+' : ''
+    const fileName = `pitch_${sign}${semitones}.webm`
+
+    await drive.uploadFile(token, fileName, opusData, 'audio/webm', folderId)
+
+    // Update manifest
+    if (!manifestCache) manifestCache = { version: 1, sessions: [] }
+    if (!manifestCache.pitchCache) manifestCache.pitchCache = []
+
+    const idx = manifestCache.pitchCache.findIndex(e => e.videoId === videoId)
+    if (idx >= 0) {
+      if (!manifestCache.pitchCache[idx].generatedKeys.includes(semitones)) {
+        manifestCache.pitchCache[idx].generatedKeys.push(semitones)
+        manifestCache.pitchCache[idx].generatedKeys.sort((a, b) => a - b)
+      }
+      manifestCache.pitchCache[idx].driveFolderId = folderId
+    } else {
+      manifestCache.pitchCache.push({
+        videoId,
+        duration: 0,
+        driveFolderId: folderId,
+        hasRaw: false,
+        generatedKeys: [semitones],
+      })
+    }
+
+    await saveManifest(token)
+    console.log(`[drive-sync] Uploaded pitch ${sign}${semitones} for ${videoId}`)
+  } catch (err) {
+    console.error('[drive-sync] Failed to upload pitched audio:', err)
+  }
+}
+
+/**
+ * Download a pitch-shifted audio file from Google Drive.
+ * Returns the Opus ArrayBuffer, or null if not found.
+ */
+export async function downloadPitchedAudio(videoId: string, semitones: number): Promise<ArrayBuffer | null> {
+  if (!isSignedIn()) return null
+
+  try {
+    const entry = getPitchCacheEntry(videoId)
+    if (!entry?.driveFolderId) return null
+    if (!entry.generatedKeys.includes(semitones)) return null
+
+    const token = await getValidToken()
+    const sign = semitones > 0 ? '+' : ''
+    const fileName = `pitch_${sign}${semitones}.webm`
+
+    const file = await drive.findFileByName(token, fileName, entry.driveFolderId)
+    if (!file) return null
+
+    return await drive.downloadFile(token, file.id)
+  } catch (err) {
+    console.error('[drive-sync] Failed to download pitched audio:', err)
+    return null
+  }
+}
+
+/**
+ * Download raw captured audio from Google Drive.
+ * Returns the Opus ArrayBuffer, or null if not found.
+ */
+export async function downloadPitchRawAudio(videoId: string): Promise<ArrayBuffer | null> {
+  if (!isSignedIn()) return null
+
+  try {
+    const entry = getPitchCacheEntry(videoId)
+    if (!entry?.driveFolderId || !entry.hasRaw) return null
+
+    const token = await getValidToken()
+    const file = await drive.findFileByName(token, 'raw.webm', entry.driveFolderId)
+    if (!file) return null
+
+    return await drive.downloadFile(token, file.id)
+  } catch (err) {
+    console.error('[drive-sync] Failed to download pitch raw audio:', err)
+    return null
   }
 }

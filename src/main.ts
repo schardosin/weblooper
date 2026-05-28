@@ -221,6 +221,8 @@ class WebLooper {
   private _pitchAudioSource: AudioBufferSourceNode | null = null  // Currently playing pitch-shifted audio
   private _pitchAudioContext: AudioContext | null = null
   private _pitchSyncInterval: number | null = null
+  private _pitchRawBuffer: AudioBuffer | null = null              // Raw (original key) AudioBuffer for current video
+  private _pitchStretchGeneration = 0                             // Generation counter for aborting stale stretches
   private duration = 0
   private start = 0
   private end = 0
@@ -4024,6 +4026,7 @@ class WebLooper {
     // Stop pitch-shifted audio playback
     this.stopPitchPlayback()
     this.videoPitch = 0
+    this._pitchRawBuffer = null
     this.stopTimeMonitor()
     if (this.player) {
       try { this.player.pauseVideo() } catch {}
@@ -4080,11 +4083,14 @@ class WebLooper {
     if (semitones === 0) {
       this.videoPitch = 0
       this.stopPitchPlayback()
+      this._pitchRawBuffer = null
       try { this.player?.unMute?.() } catch {}
       return
     }
 
     const videoId = this.currentVideoId
+    const tempo = this.playbackRate
+    const needsTempo = Math.abs(tempo - 1.0) >= 0.01
 
     // Check if we already have this pitch cached locally
     const { hasPitchedAudio, loadPitchedAudio, hasRawAudio, loadRawAudio, saveRawAudio, savePitchedAudio } = await import('./audio/pitch-cache')
@@ -4093,8 +4099,21 @@ class WebLooper {
       const opusData = await loadPitchedAudio(videoId, semitones)
       if (opusData) {
         const buffer = await this.decodeOpusToBuffer(opusData)
-        this.videoPitch = semitones
-        this.startPitchPlayback(buffer)
+
+        // If speed != 1.0, we need to time-stretch the pitched buffer
+        if (needsTempo) {
+          // We need the raw buffer for re-stretching on future speed changes
+          await this.ensurePitchRawBufferLoaded(videoId)
+          const { timeStretch } = await import('./audio/time-stretch')
+          const playbackBuffer = timeStretch(buffer, tempo, 0) // already pitched, just stretch tempo
+          this.videoPitch = semitones
+          this.startPitchPlayback(playbackBuffer)
+        } else {
+          // Also load raw buffer in background for future speed changes
+          this.ensurePitchRawBufferLoaded(videoId)
+          this.videoPitch = semitones
+          this.startPitchPlayback(buffer)
+        }
         return
       }
     }
@@ -4115,8 +4134,18 @@ class WebLooper {
             // Save locally for future use
             await savePitchedAudio(videoId, semitones, opusData)
             const buffer = await this.decodeOpusToBuffer(opusData)
-            this.videoPitch = semitones
-            this.startPitchPlayback(buffer)
+
+            if (needsTempo) {
+              await this.ensurePitchRawBufferLoaded(videoId)
+              const { timeStretch } = await import('./audio/time-stretch')
+              const playbackBuffer = timeStretch(buffer, tempo, 0)
+              this.videoPitch = semitones
+              this.startPitchPlayback(playbackBuffer)
+            } else {
+              this.ensurePitchRawBufferLoaded(videoId)
+              this.videoPitch = semitones
+              this.startPitchPlayback(buffer)
+            }
             return
           }
         }
@@ -4171,8 +4200,12 @@ class WebLooper {
   /**
    * Generate a pitch-shifted version from raw audio, save it, and start playback.
    * Also uploads to Drive in the background.
+   * If the current playback rate != 1.0, the playback buffer is additionally time-stretched.
    */
   private async generateAndPlayPitchedAudio(videoId: string, semitones: number, rawBuffer: AudioBuffer) {
+    // Save raw buffer for future speed changes
+    this._pitchRawBuffer = rawBuffer
+
     // Show a brief generating indicator
     const pitchValueEl = document.getElementById('pitch-value')
     if (pitchValueEl) pitchValueEl.textContent = '...'
@@ -4182,24 +4215,47 @@ class WebLooper {
       const { encodeToOpusWebM } = await import('./audio/opus-encoder')
       const { savePitchedAudio } = await import('./audio/pitch-cache')
 
-      // Pitch shift (tempo = 1.0, just change pitch)
+      // Pitch shift (tempo = 1.0, just change pitch) — this is what we store/cache
       const shifted = timeStretch(rawBuffer, 1.0, semitones)
 
-      // Encode to Opus for storage
+      // Encode to Opus for storage (always store at tempo=1.0)
       const opusData = await encodeToOpusWebM(shifted, { bitrate: 128_000 })
       await savePitchedAudio(videoId, semitones, opusData)
 
       // Background upload to Drive
       this.backgroundUploadPitchedAudio(videoId, semitones, opusData)
 
+      // For playback: if current speed != 1.0, apply tempo stretch on top of pitch shift
+      const tempo = this.playbackRate
+      const needsTempo = Math.abs(tempo - 1.0) >= 0.01
+      const playbackBuffer = needsTempo ? timeStretch(rawBuffer, tempo, semitones) : shifted
+
       // Start playback
       this.videoPitch = semitones
-      this.startPitchPlayback(shifted)
+      this.startPitchPlayback(playbackBuffer)
 
-      console.log(`[pitch] Generated and cached pitch ${semitones > 0 ? '+' : ''}${semitones} for ${videoId}`)
+      console.log(`[pitch] Generated and cached pitch ${semitones > 0 ? '+' : ''}${semitones} for ${videoId} (tempo=${tempo})`)
     } catch (err) {
       console.error('[pitch] Failed to generate pitch-shifted audio:', err)
       if (pitchValueEl) pitchValueEl.textContent = 'ERR'
+    }
+  }
+
+  /**
+   * Ensure the raw AudioBuffer for the current video is loaded into memory.
+   * Needed for re-stretching when speed changes while pitch is active.
+   */
+  private async ensurePitchRawBufferLoaded(videoId: string): Promise<void> {
+    if (this._pitchRawBuffer) return
+
+    try {
+      const { loadRawAudio } = await import('./audio/pitch-cache')
+      const rawOpusData = await loadRawAudio(videoId)
+      if (rawOpusData) {
+        this._pitchRawBuffer = await this.decodeOpusToBuffer(rawOpusData)
+      }
+    } catch (err) {
+      console.warn('[pitch] Failed to load raw buffer for speed changes:', err)
     }
   }
 
@@ -4226,8 +4282,12 @@ class WebLooper {
   }
 
   /**
-   * Start playing a pitch-shifted audio buffer synced to the YouTube video.
+   * Start playing a pitch-shifted (and possibly time-stretched) audio buffer synced to YouTube.
    * Mutes YouTube audio and plays the buffer using Web Audio API.
+   *
+   * The buffer is always pre-stretched to match the current playbackRate, so we play it
+   * at rate=1.0 in the AudioBufferSourceNode. Drift correction converts between
+   * "logical time" (video position) and "buffer time" (position in the stretched buffer).
    */
   private startPitchPlayback(buffer: AudioBuffer) {
     // Stop any existing pitch playback
@@ -4240,22 +4300,35 @@ class WebLooper {
     const ctx = new AudioContext()
     this._pitchAudioContext = ctx
 
+    const rate = this.playbackRate
+
+    // Convert between logical time (video position) and buffer time
+    const logicalToBuffer = (logicalTime: number): number => {
+      if (Math.abs(rate - 1.0) < 0.01) return logicalTime
+      return logicalTime / rate
+    }
+    const bufferToLogical = (bufferElapsed: number): number => {
+      if (Math.abs(rate - 1.0) < 0.01) return bufferElapsed
+      return bufferElapsed * rate
+    }
+
     // Track position for drift calculation
     let pitchStartCtxTime = ctx.currentTime
-    let pitchStartOffset = 0
+    let pitchStartLogicalOffset = 0  // logical (video) time when we started
 
-    const restartFrom = (offset: number) => {
+    const restartFrom = (logicalOffset: number) => {
       if (this._pitchAudioSource) {
         try { this._pitchAudioSource.stop() } catch {}
       }
       const source = ctx.createBufferSource()
       source.buffer = buffer
       source.connect(ctx.destination)
-      const clampedOffset = Math.max(0, Math.min(offset, buffer.duration - 0.01))
+      const bufferOffset = logicalToBuffer(logicalOffset)
+      const clampedOffset = Math.max(0, Math.min(bufferOffset, buffer.duration - 0.01))
       source.start(0, clampedOffset)
       this._pitchAudioSource = source
       pitchStartCtxTime = ctx.currentTime
-      pitchStartOffset = clampedOffset
+      pitchStartLogicalOffset = logicalOffset
     }
 
     // Get current YouTube state and start from there if playing
@@ -4288,10 +4361,11 @@ class WebLooper {
         // Drift correction while playing
         if (isPlaying && this._pitchAudioSource) {
           const ytNow = this.player.getCurrentTime?.() ?? 0
-          const elapsed = ctx.currentTime - pitchStartCtxTime
-          const audioPos = pitchStartOffset + elapsed
+          const bufferElapsed = ctx.currentTime - pitchStartCtxTime
+          // Since buffer is pre-stretched, elapsed buffer time maps to logical time via bufferToLogical
+          const audioLogicalPos = pitchStartLogicalOffset + bufferToLogical(bufferElapsed)
 
-          if (Math.abs(ytNow - audioPos) > 0.15) {
+          if (Math.abs(ytNow - audioLogicalPos) > 0.15) {
             restartFrom(ytNow)
           }
         }
@@ -4560,6 +4634,56 @@ class WebLooper {
     }
     this.updateSpeedUI()
     this.persistState()
+
+    // If pitch playback is active, re-stretch the buffer for the new tempo
+    if (this.videoPitch !== 0 && this._pitchRawBuffer) {
+      this.restretchPitchForTempo(rate)
+    }
+  }
+
+  /**
+   * Re-process the raw audio buffer with the current pitch + new tempo,
+   * then restart pitch playback. Shows a brief "stretching" indicator.
+   * Uses a generation counter to discard stale results if speed changes rapidly.
+   */
+  private async restretchPitchForTempo(tempo: number) {
+    const rawBuffer = this._pitchRawBuffer
+    if (!rawBuffer) return
+
+    const generation = ++this._pitchStretchGeneration
+
+    const pitchValueEl = document.getElementById('pitch-value')
+    if (pitchValueEl) pitchValueEl.textContent = '...'
+
+    try {
+      const { timeStretch } = await import('./audio/time-stretch')
+
+      // Yield to keep UI responsive before heavy processing
+      await new Promise(resolve => setTimeout(resolve, 0))
+
+      // Check if a newer stretch was requested while we were waiting
+      if (generation !== this._pitchStretchGeneration) return
+
+      // Pure pitch shift (no tempo change) when speed is 1x
+      // Otherwise combine tempo stretch + pitch shift
+      const needsTempo = Math.abs(tempo - 1.0) >= 0.01
+      const stretched = timeStretch(rawBuffer, needsTempo ? tempo : 1.0, this.videoPitch)
+
+      // Check again after processing — another speed change might have happened
+      if (generation !== this._pitchStretchGeneration) return
+
+      // Restart playback with the new buffer from the current YouTube position
+      this.startPitchPlayback(stretched)
+
+      // Update pitch display
+      if (pitchValueEl) pitchValueEl.textContent = this.videoPitch > 0 ? `+${this.videoPitch}` : String(this.videoPitch)
+
+      console.log(`[pitch] Re-stretched for tempo=${tempo}, pitch=${this.videoPitch}`)
+    } catch (err) {
+      if (generation !== this._pitchStretchGeneration) return
+      console.error('[pitch] Failed to re-stretch audio:', err)
+      if (pitchValueEl) pitchValueEl.textContent = 'ERR'
+    }
   }
 
   /**

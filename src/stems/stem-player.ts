@@ -237,8 +237,19 @@ export class StemPlayer {
     const newPitch = Math.max(-12, Math.min(12, Math.round(semitones))) // reasonable range: ±1 octave
     if (newPitch === this.pitchSemitones) return
 
+    const wasPlaying = this.isPlaying
+    const currentTime = this.getCurrentTime()
+
+    if (wasPlaying) this.pause()
+
     this.pitchSemitones = newPitch
+    this.offset = currentTime
+
     await this.reprocessAudio()
+
+    if (wasPlaying) {
+      this.play()
+    }
   }
 
   getCurrentPitch(): number {

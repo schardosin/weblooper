@@ -216,6 +216,8 @@ class WebLooper {
   private player: any = null
   private playerReady = false
   private currentVideoId: string | null = null
+  private attachedStemPlayer: any = null   // StemPlayer when stems are synced to this YT video
+  private videoPitch = 0                    // Current key shift for this video (affects attached stems)
   private duration = 0
   private start = 0
   private end = 0
@@ -965,6 +967,7 @@ class WebLooper {
 
     // Change video
     e.changeVideoBtn.addEventListener('click', () => {
+      this.attachedStemPlayer = null
       this.unloadVideo()
       e.loaderSection.classList.remove('hidden')
       e.playerSection.classList.add('hidden')
@@ -1062,30 +1065,26 @@ class WebLooper {
     })
 
     // Key / Pitch shift (semitones) — primarily affects attached stem player
-    let videoPitch = 0
     const pitchValueEl = document.getElementById('pitch-value')!
     const pitchDec = document.getElementById('pitch-dec')!
     const pitchInc = document.getElementById('pitch-inc')!
 
-    function updateVideoPitchUI() {
-      pitchValueEl.textContent = videoPitch > 0 ? `+${videoPitch}` : String(videoPitch)
+    const updateVideoPitchUI = () => {
+      pitchValueEl.textContent = this.videoPitch > 0 ? `+${this.videoPitch}` : String(this.videoPitch)
     }
 
     pitchDec.addEventListener('click', async () => {
-      videoPitch = Math.max(-12, videoPitch - 1)
-      // If stems are attached, shift them
-      const attachedStemPlayer = (this as any).__attachedStemPlayer
-      if (attachedStemPlayer) {
-        await attachedStemPlayer.setPitch(videoPitch)
+      this.videoPitch = Math.max(-12, this.videoPitch - 1)
+      if (this.attachedStemPlayer) {
+        await this.attachedStemPlayer.setPitch(this.videoPitch)
       }
       updateVideoPitchUI()
     })
 
     pitchInc.addEventListener('click', async () => {
-      videoPitch = Math.min(12, videoPitch + 1)
-      const attachedStemPlayer = (this as any).__attachedStemPlayer
-      if (attachedStemPlayer) {
-        await attachedStemPlayer.setPitch(videoPitch)
+      this.videoPitch = Math.min(12, this.videoPitch + 1)
+      if (this.attachedStemPlayer) {
+        await this.attachedStemPlayer.setPitch(this.videoPitch)
       }
       updateVideoPitchUI()
     })
@@ -1333,6 +1332,15 @@ class WebLooper {
       // Start stem playback — YouTube audio is muted, stems provide the audio
       stemPlayer.play()
 
+      this.attachedStemPlayer = stemPlayer
+      // Sync pitch UI if the stem player already has a pitch shift
+      if (typeof stemPlayer.getCurrentPitch === 'function') {
+        this.videoPitch = stemPlayer.getCurrentPitch()
+      }
+      // Update the KEY display in the video UI
+      const pv = document.getElementById('pitch-value')
+      if (pv) pv.textContent = this.videoPitch > 0 ? `+${this.videoPitch}` : String(this.videoPitch)
+
       this.startStemSyncWithYouTubePlayer(stemPlayer)
 
       // Show the stem mixer below the player
@@ -1449,6 +1457,13 @@ class WebLooper {
 
     // Start playback and sync
     stemPlayer.play()
+    this.attachedStemPlayer = stemPlayer
+    if (typeof stemPlayer.getCurrentPitch === 'function') {
+      this.videoPitch = stemPlayer.getCurrentPitch()
+    }
+    const pv = document.getElementById('pitch-value')
+    if (pv) pv.textContent = this.videoPitch > 0 ? `+${this.videoPitch}` : String(this.videoPitch)
+
     this.startStemSyncWithYouTubePlayer(stemPlayer)
     this.showStemMixerForCurrentYouTubeVideo(stemPlayer)
 
@@ -4178,6 +4193,7 @@ class WebLooper {
   }
 
   private unloadVideo() {
+    this.attachedStemPlayer = null
     this.stopTimeMonitor()
     if (this.player) {
       try { this.player.pauseVideo() } catch {}

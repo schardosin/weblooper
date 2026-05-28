@@ -1075,6 +1075,9 @@ class WebLooper {
 
     pitchDec.addEventListener('click', async () => {
       this.videoPitch = Math.max(-12, this.videoPitch - 1)
+
+      await this.ensureStemsAttachedForPitchShift()
+
       if (this.attachedStemPlayer) {
         await this.attachedStemPlayer.setPitch(this.videoPitch)
       }
@@ -1083,6 +1086,9 @@ class WebLooper {
 
     pitchInc.addEventListener('click', async () => {
       this.videoPitch = Math.min(12, this.videoPitch + 1)
+
+      await this.ensureStemsAttachedForPitchShift()
+
       if (this.attachedStemPlayer) {
         await this.attachedStemPlayer.setPitch(this.videoPitch)
       }
@@ -1306,7 +1312,6 @@ class WebLooper {
       const sessionMeta = findStemSessionForYouTubeVideo(videoId)
 
       if (!sessionMeta) {
-        // No stems for this video yet — user can still click "Separate Stems" later
         return
       }
 
@@ -1316,40 +1321,72 @@ class WebLooper {
         return
       }
 
-      // Mute the YouTube player (we will drive audio from stems)
-      if (this.player) {
-        try { this.player.mute() } catch {}
-      }
-
-      // Create StemPlayer for this video
-      const { StemPlayer } = await import('./stems')
-      const stemPlayer = new StemPlayer()
-      stemPlayer.loadStems(loaded.stems.map(s => ({ name: s.name, buffer: s.buffer })))
-
-      // Store for sync and controls
-      ;(this as any).__currentYouTubeStemPlayer = stemPlayer
-
-      // Start stem playback — YouTube audio is muted, stems provide the audio
-      stemPlayer.play()
-
-      this.attachedStemPlayer = stemPlayer
-      // Sync pitch UI if the stem player already has a pitch shift
-      if (typeof stemPlayer.getCurrentPitch === 'function') {
-        this.videoPitch = stemPlayer.getCurrentPitch()
-      }
-      // Update the KEY display in the video UI
-      const pv = document.getElementById('pitch-value')
-      if (pv) pv.textContent = this.videoPitch > 0 ? `+${this.videoPitch}` : String(this.videoPitch)
-
-      this.startStemSyncWithYouTubePlayer(stemPlayer)
-
-      // Show the stem mixer below the player
-      this.showStemMixerForCurrentYouTubeVideo(stemPlayer)
-
-      console.log('[weblooper] Attached previously separated stems to YouTube video', videoId)
-
+      await this.attachStemsToVideo(videoId, loaded.stems, true) // with mixer
     } catch (err) {
       console.warn('[weblooper] Failed to attach stems to YouTube video', err)
+    }
+  }
+
+  /**
+   * Attaches stems to the current YouTube video for audio playback.
+   * When showMixer=false, we switch the audio source silently (useful for key/pitch changes
+   * without forcing the full stem mixer UI on the user).
+   */
+  private async attachStemsToVideo(
+    videoId: string,
+    stems: Array<{ name: string; buffer: AudioBuffer }>,
+    showMixer: boolean
+  ) {
+    if (this.player) {
+      try { this.player.mute() } catch {}
+    }
+
+    const { StemPlayer } = await import('./stems')
+    const stemPlayer = new StemPlayer()
+    stemPlayer.loadStems(stems.map(s => ({ name: s.name, buffer: s.buffer })))
+
+    stemPlayer.play()
+
+    this.attachedStemPlayer = stemPlayer
+
+    if (typeof stemPlayer.getCurrentPitch === 'function') {
+      this.videoPitch = stemPlayer.getCurrentPitch()
+    }
+    const pv = document.getElementById('pitch-value')
+    if (pv) pv.textContent = this.videoPitch > 0 ? `+${this.videoPitch}` : String(this.videoPitch)
+
+    this.startStemSyncWithYouTubePlayer(stemPlayer)
+
+    if (showMixer) {
+      this.showStemMixerForCurrentYouTubeVideo(stemPlayer)
+    }
+
+    console.log('[weblooper] Attached stems to YouTube video', videoId, showMixer ? '(with mixer)' : '(audio processing only)')
+  }
+
+  /**
+   * Ensures that stems are attached for the current video so that pitch/key changes can take effect
+   * on the full audio. This is called automatically when the user uses the KEY controls.
+   *
+   * If stems exist for this video but are not yet attached, we attach them **silently**
+   * (without showing the stem mixer UI). This allows key shifting the full audio while
+   * staying in the clean video view.
+   */
+  private async ensureStemsAttachedForPitchShift() {
+    if (this.attachedStemPlayer || !this.currentVideoId) return
+
+    try {
+      const { findStemSessionForYouTubeVideo, loadStemSession } = await import('./stems')
+      const sessionMeta = findStemSessionForYouTubeVideo(this.currentVideoId)
+      if (!sessionMeta) return
+
+      const loaded = await loadStemSession(sessionMeta.id)
+      if (!loaded || loaded.stems.length === 0) return
+
+      // Attach silently (no mixer)
+      await this.attachStemsToVideo(this.currentVideoId, loaded.stems, false)
+    } catch (err) {
+      console.warn('[weblooper] Failed to auto-attach stems for pitch shift', err)
     }
   }
 
@@ -1444,30 +1481,8 @@ class WebLooper {
       setTimeout(() => { clearInterval(checkReady); resolve() }, 15000)
     })
 
-    // Mute YouTube audio — stems will provide the audio
-    if (this.player) {
-      try { this.player.mute() } catch {}
-    }
-
-    // Create StemPlayer and attach
-    const { StemPlayer } = await import('./stems')
-    const stemPlayer = new StemPlayer()
-    stemPlayer.loadStems(stems.map(s => ({ name: s.name, buffer: s.buffer })))
-    ;(this as any).__currentYouTubeStemPlayer = stemPlayer
-
-    // Start playback and sync
-    stemPlayer.play()
-    this.attachedStemPlayer = stemPlayer
-    if (typeof stemPlayer.getCurrentPitch === 'function') {
-      this.videoPitch = stemPlayer.getCurrentPitch()
-    }
-    const pv = document.getElementById('pitch-value')
-    if (pv) pv.textContent = this.videoPitch > 0 ? `+${this.videoPitch}` : String(this.videoPitch)
-
-    this.startStemSyncWithYouTubePlayer(stemPlayer)
-    this.showStemMixerForCurrentYouTubeVideo(stemPlayer)
-
-    console.log('[weblooper] Restored YouTube video with saved stems', videoId)
+    // Use the shared attachment helper (with mixer, since this is the restore-from-saved-stems path)
+    await this.attachStemsToVideo(videoId, stems, true)
   }
 
   /**

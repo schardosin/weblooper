@@ -1308,8 +1308,16 @@ class WebLooper {
    */
   private async tryAttachStemsToCurrentYouTubeVideo(videoId: string) {
     try {
-      const { findStemSessionForYouTubeVideo, loadStemSession } = await import('./stems')
-      const sessionMeta = findStemSessionForYouTubeVideo(videoId)
+      const { findStemSessionForYouTubeVideo, findStemSessionByYouTubeTitle, loadStemSession } = await import('./stems')
+      let sessionMeta = findStemSessionForYouTubeVideo(videoId)
+
+      // Fallback: search by video title for stems saved before youtubeVideoId was persisted
+      if (!sessionMeta) {
+        const videoTitle = (this.els.videoTitle?.textContent || '').trim()
+        if (videoTitle) {
+          sessionMeta = findStemSessionByYouTubeTitle(videoId, videoTitle)
+        }
+      }
 
       if (!sessionMeta) {
         return
@@ -1376,8 +1384,17 @@ class WebLooper {
     if (this.attachedStemPlayer || !this.currentVideoId) return
 
     try {
-      const { findStemSessionForYouTubeVideo, loadStemSession } = await import('./stems')
-      const sessionMeta = findStemSessionForYouTubeVideo(this.currentVideoId)
+      const { findStemSessionForYouTubeVideo, findStemSessionByYouTubeTitle, loadStemSession } = await import('./stems')
+      let sessionMeta = findStemSessionForYouTubeVideo(this.currentVideoId)
+
+      // Fallback: search by video title for stems saved before youtubeVideoId was persisted
+      if (!sessionMeta) {
+        const videoTitle = (this.els.videoTitle?.textContent || '').trim()
+        if (videoTitle) {
+          sessionMeta = findStemSessionByYouTubeTitle(this.currentVideoId, videoTitle)
+        }
+      }
+
       if (!sessionMeta) return
 
       const loaded = await loadStemSession(sessionMeta.id)
@@ -2356,10 +2373,9 @@ class WebLooper {
   /**
    * Start stem separation for a YouTube video that is **already loaded**.
    *
-   * This flow FULLY DECOUPLES the resulting stems from the YouTube video:
    * - The normal video UI is replaced by a dedicated blocking card (user cannot touch the video).
    * - Card shows "Recording..." (tab audio capture) then transitions to "Breaking into stems...".
-   * - On success we save the stems exactly like local audio (no youtubeVideoId, no relationship).
+   * - On success we save the stems with the youtubeVideoId so key/pitch shift can find them later.
    * - We immediately launch the pure independent stem looper (enterStemPracticeWithRealStems)
    *   with full timeline, loop controls, mixer, speed, etc. — zero sync with the YouTube player.
    *
@@ -2724,8 +2740,8 @@ class WebLooper {
         const { saveStemSession } = await import('./stems')
         const savedId = await saveStemSession(
           {
-            // Deliberately omit youtubeVideoId / youtubeVideoTitle.
-            // This makes the stems first-class citizens exactly like local audio stems.
+            youtubeVideoId: videoId,
+            youtubeVideoTitle: ytTitle,
             fileName: `YouTube — ${ytTitle}`,
             duration: result.decoded.duration,
             stemNames: stemResult.stems.map(s => s.name),
@@ -2739,6 +2755,8 @@ class WebLooper {
         this.backgroundUploadToCloud(
           {
             id: savedId,
+            youtubeVideoId: videoId,
+            youtubeVideoTitle: ytTitle,
             fileName: `YouTube — ${ytTitle}`,
             duration: result.decoded.duration,
             stemNames: stemResult.stems.map(s => s.name),

@@ -285,7 +285,50 @@ export function listStemSessions(): StemSessionMeta[] {
 
 /** Find a stem session for a specific YouTube video, if any */
 export function findStemSessionForYouTubeVideo(videoId: string): StemSessionMeta | undefined {
-  return readMetaList().find(s => s.youtubeVideoId === videoId)
+  const list = readMetaList()
+  // Primary lookup: exact youtubeVideoId match
+  const exact = list.find(s => s.youtubeVideoId === videoId)
+  if (exact) return exact
+
+  // Fallback: sessions saved before the youtubeVideoId fix may only have
+  // fileName like "YouTube — <title>" without an explicit videoId.
+  // We cannot match by videoId here, but we expose a separate helper for title-based matching.
+  return undefined
+}
+
+/**
+ * Fallback: find a stem session for a YouTube video by matching the video title
+ * in the fileName field. Used for stems that were saved before youtubeVideoId was persisted.
+ * If found, automatically patches the session metadata with the correct videoId for future lookups.
+ */
+export function findStemSessionByYouTubeTitle(videoId: string, videoTitle: string): StemSessionMeta | undefined {
+  if (!videoTitle) return undefined
+  const list = readMetaList()
+
+  // Look for sessions with fileName matching "YouTube — <title>" (exact or partial)
+  const normalizedTitle = videoTitle.trim().toLowerCase()
+  const match = list.find(s => {
+    if (s.youtubeVideoId) return false // already has a videoId, skip
+    if (!s.fileName) return false
+    const fn = s.fileName.toLowerCase()
+    // Match "youtube — <title>" pattern
+    if (fn.startsWith('youtube — ') || fn.startsWith('youtube - ')) {
+      const titlePart = fn.replace(/^youtube\s*[—-]\s*/, '').trim()
+      return titlePart === normalizedTitle || normalizedTitle.includes(titlePart) || titlePart.includes(normalizedTitle)
+    }
+    return false
+  })
+
+  if (match) {
+    // Patch the session metadata so future lookups work by videoId directly
+    match.youtubeVideoId = videoId
+    match.youtubeVideoTitle = videoTitle
+    const updatedList = list.map(s => s.id === match.id ? match : s)
+    writeMetaList(updatedList)
+    console.log('[stems] Patched session', match.id, 'with youtubeVideoId:', videoId)
+  }
+
+  return match
 }
 
 /** Delete a session (metadata + OPFS files) */

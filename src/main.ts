@@ -216,9 +216,11 @@ class WebLooper {
   private player: any = null
   private playerReady = false
   private currentVideoId: string | null = null
-  private attachedStemPlayer: any = null   // StemPlayer when stems are synced to this YT video
-  private videoPitch = 0                    // Current key shift for this video (affects attached stems)
+  private videoPitch = 0                    // Current key shift for this video
   private _onVideoEndedDuringCapture: (() => void) | null = null  // Callback to stop recording when video ends
+  private _pitchAudioSource: AudioBufferSourceNode | null = null  // Currently playing pitch-shifted audio
+  private _pitchAudioContext: AudioContext | null = null
+  private _pitchSyncInterval: number | null = null
   private duration = 0
   private start = 0
   private end = 0
@@ -813,7 +815,7 @@ class WebLooper {
                           <button id="pitch-inc" class="w-6 h-6 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-white/10 text-zinc-300 text-xs font-bold flex items-center justify-center transition">+</button>
                         </div>
                       </div>
-                      <div class="text-[10px] text-zinc-500 px-0.5">Semitones (requires stems for full effect)</div>
+                      <div class="text-[10px] text-zinc-500 px-0.5">Semitones (pre-generated, synced to video)</div>
                     </div>
                   </div>
 
@@ -1064,7 +1066,7 @@ class WebLooper {
       this.setPlaybackRate(next)
     })
 
-    // Key / Pitch shift (semitones) — primarily affects attached stem player
+    // Key / Pitch shift (semitones) — uses pre-generated pitch-shifted audio
     const pitchValueEl = document.getElementById('pitch-value')!
     const pitchDec = document.getElementById('pitch-dec')!
     const pitchInc = document.getElementById('pitch-inc')!
@@ -1074,24 +1076,14 @@ class WebLooper {
     }
 
     pitchDec.addEventListener('click', async () => {
-      this.videoPitch = Math.max(-12, this.videoPitch - 1)
-
-      await this.ensureStemsAttachedForPitchShift()
-
-      if (this.attachedStemPlayer) {
-        await this.attachedStemPlayer.setPitch(this.videoPitch)
-      }
+      const target = Math.max(-12, this.videoPitch - 1)
+      await this.handleVideoPitchChange(target)
       updateVideoPitchUI()
     })
 
     pitchInc.addEventListener('click', async () => {
-      this.videoPitch = Math.min(12, this.videoPitch + 1)
-
-      await this.ensureStemsAttachedForPitchShift()
-
-      if (this.attachedStemPlayer) {
-        await this.attachedStemPlayer.setPitch(this.videoPitch)
-      }
+      const target = Math.min(12, this.videoPitch + 1)
+      await this.handleVideoPitchChange(target)
       updateVideoPitchUI()
     })
 
@@ -1302,184 +1294,8 @@ class WebLooper {
 
     // Fetch title via oEmbed (best effort)
     this.fetchAndSetTitle(id)
-
-    // Check if we have previously separated stems for this YouTube video
-    this.tryAttachStemsToCurrentYouTubeVideo(id)
   }
 
-  /**
-   * If the user has previously done stem separation for this YouTube videoId,
-   * load the stems, mute the YouTube audio, and keep a StemPlayer in sync with the video.
-   */
-  private async tryAttachStemsToCurrentYouTubeVideo(videoId: string) {
-    try {
-      const { findStemSessionForYouTubeVideo, findStemSessionByYouTubeTitle, loadStemSession } = await import('./stems')
-      let sessionMeta = findStemSessionForYouTubeVideo(videoId)
-
-      // Fallback: search by video title for stems saved before youtubeVideoId was persisted
-      if (!sessionMeta) {
-        const videoTitle = (this.els.videoTitle?.textContent || '').trim()
-        if (videoTitle) {
-          sessionMeta = findStemSessionByYouTubeTitle(videoId, videoTitle)
-        }
-      }
-
-      if (!sessionMeta) {
-        return
-      }
-
-      const loaded = await loadStemSession(sessionMeta.id)
-      if (!loaded || loaded.stems.length === 0) {
-        console.warn('[weblooper] Found stem session metadata for video but failed to load audio data')
-        return
-      }
-
-      await this.attachStemsToVideo(videoId, loaded.stems, false) // silent — stems available for pitch shift but no mixer shown
-    } catch (err) {
-      console.warn('[weblooper] Failed to attach stems to YouTube video', err)
-    }
-  }
-
-  /**
-   * Attaches stems to the current YouTube video for audio playback.
-   * When showMixer=false, we switch the audio source silently (useful for key/pitch changes
-   * without forcing the full stem mixer UI on the user).
-   */
-  private async attachStemsToVideo(
-    videoId: string,
-    stems: Array<{ name: string; buffer: AudioBuffer }>,
-    showMixer: boolean
-  ) {
-    if (this.player) {
-      try { this.player.mute() } catch {}
-    }
-
-    const { StemPlayer } = await import('./stems')
-    const stemPlayer = new StemPlayer()
-    stemPlayer.loadStems(stems.map(s => ({ name: s.name, buffer: s.buffer })))
-
-    stemPlayer.play()
-
-    this.attachedStemPlayer = stemPlayer
-
-    if (typeof stemPlayer.getCurrentPitch === 'function') {
-      this.videoPitch = stemPlayer.getCurrentPitch()
-    }
-    const pv = document.getElementById('pitch-value')
-    if (pv) pv.textContent = this.videoPitch > 0 ? `+${this.videoPitch}` : String(this.videoPitch)
-
-    this.startStemSyncWithYouTubePlayer(stemPlayer)
-
-    if (showMixer) {
-      this.showStemMixerForCurrentYouTubeVideo(stemPlayer)
-    }
-
-    console.log('[weblooper] Attached stems to YouTube video', videoId, showMixer ? '(with mixer)' : '(audio processing only)')
-  }
-
-  /**
-   * Ensures that stems are attached for the current video so that pitch/key changes can take effect
-   * on the full audio. This is called automatically when the user uses the KEY controls.
-   *
-   * If stems exist for this video but are not yet attached, we attach them **silently**
-   * (without showing the stem mixer UI). This allows key shifting the full audio while
-   * staying in the clean video view.
-   */
-  private async ensureStemsAttachedForPitchShift() {
-    if (this.attachedStemPlayer || !this.currentVideoId) return
-
-    try {
-      const { findStemSessionForYouTubeVideo, findStemSessionByYouTubeTitle, loadStemSession } = await import('./stems')
-      let sessionMeta = findStemSessionForYouTubeVideo(this.currentVideoId)
-
-      // Fallback: search by video title for stems saved before youtubeVideoId was persisted
-      if (!sessionMeta) {
-        const videoTitle = (this.els.videoTitle?.textContent || '').trim()
-        if (videoTitle) {
-          sessionMeta = findStemSessionByYouTubeTitle(this.currentVideoId, videoTitle)
-        }
-      }
-
-      if (!sessionMeta) return
-
-      const loaded = await loadStemSession(sessionMeta.id)
-      if (!loaded || loaded.stems.length === 0) return
-
-      // Attach silently (no mixer)
-      await this.attachStemsToVideo(this.currentVideoId, loaded.stems, false)
-    } catch (err) {
-      console.warn('[weblooper] Failed to auto-attach stems for pitch shift', err)
-    }
-  }
-
-  private startStemSyncWithYouTubePlayer(stemPlayer: any) {
-    // Polling sync: keeps stems in lockstep with YouTube player
-    // Handles both time drift correction AND play/pause state sync
-    const syncInterval = setInterval(() => {
-      if (!this.player || !stemPlayer) return
-
-      try {
-        const ytState = this.player.getPlayerState?.()
-        const YT = window.YT
-
-        if (!YT) return
-
-        const ytIsPlaying = ytState === YT.PlayerState.PLAYING
-        const stemsArePlaying = stemPlayer.isPlaying
-
-        // Sync play/pause state
-        if (ytIsPlaying && !stemsArePlaying) {
-          stemPlayer.play()
-        } else if (!ytIsPlaying && stemsArePlaying) {
-          stemPlayer.pause()
-        }
-
-        // Sync time position (only while playing to avoid jitter when paused)
-        if (ytIsPlaying) {
-          const ytTime = this.player.getCurrentTime?.()
-          if (typeof ytTime === 'number') {
-            const stemTime = stemPlayer.getCurrentTime?.() ?? 0
-            // Only seek if drift is significant to avoid glitches
-            if (Math.abs(ytTime - stemTime) > 0.3) {
-              stemPlayer.seek(ytTime)
-            }
-          }
-        }
-      } catch (e) {
-        // ignore transient errors
-      }
-    }, 150)
-
-    // Store the interval ID so we can clean it up when unloading the video
-    ;(this as any).__stemSyncInterval = syncInterval
-  }
-
-  private async showStemMixerForCurrentYouTubeVideo(stemPlayer: any) {
-    // For now, create a simple container below the player if it doesn't exist
-    let container = document.getElementById('youtube-stem-mixer-container')
-    if (!container) {
-      container = document.createElement('div')
-      container.id = 'youtube-stem-mixer-container'
-      container.className = 'max-w-[1100px] mx-auto mt-6'
-      this.els.playerSection.parentElement!.appendChild(container)
-    }
-
-    container.innerHTML = ''
-
-    const { createStemMixerUI } = await import('./stems')
-    createStemMixerUI({ 
-      container, 
-      player: stemPlayer,
-      onClose: () => {
-        // For now just leave it — user can hide via other means
-      }
-    })
-  }
-
-  /**
-   * Load a YouTube video and attach pre-loaded stems to it.
-   * Used when restoring a saved YouTube stem session from the landing page.
-   */
   /**
    * Entry point for local audio files.
    * This is the on-ramp for fully client-side stem separation (user provides audio,
@@ -4205,11 +4021,8 @@ class WebLooper {
   }
 
   private unloadVideo() {
-    // Stop and dispose the attached stem player (pitch-shifted audio for YouTube)
-    if (this.attachedStemPlayer) {
-      try { this.attachedStemPlayer.dispose?.() } catch {}
-      this.attachedStemPlayer = null
-    }
+    // Stop pitch-shifted audio playback
+    this.stopPitchPlayback()
     this.videoPitch = 0
     this.stopTimeMonitor()
     if (this.player) {
@@ -4238,23 +4051,383 @@ class WebLooper {
     this.presets = []
     this.lastKnownTime = 0
 
-    // Clean up stem sync interval
-    if ((this as any).__stemSyncInterval) {
-      clearInterval((this as any).__stemSyncInterval)
-      ;(this as any).__stemSyncInterval = null
-    }
-    // Legacy cleanup (in case old references remain)
-    if ((this as any).__currentYouTubeStemPlayer) {
-      try { (this as any).__currentYouTubeStemPlayer.dispose?.() } catch {}
-      ;(this as any).__currentYouTubeStemPlayer = null
-    }
-    // Remove stem mixer container
-    document.getElementById('youtube-stem-mixer-container')?.remove()
-
     // Reset timeline so it rebuilds cleanly for next video
     if (this.els?.timeline) {
       this.els.timeline.innerHTML = ''
       delete this.els.timeline.dataset.initialized
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Pitch Shift for YouTube Video — Pre-generated approach
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Handle a pitch/key change request for the current YouTube video.
+   * If pitch is 0, stop pitch playback and unmute YouTube.
+   * Otherwise, load (or generate) the pitch-shifted audio and play it synced to video.
+   */
+  private async handleVideoPitchChange(semitones: number) {
+    if (!this.currentVideoId) return
+
+    // If returning to original key, just stop pitch playback and unmute YouTube
+    if (semitones === 0) {
+      this.videoPitch = 0
+      this.stopPitchPlayback()
+      try { this.player?.unMute?.() } catch {}
+      return
+    }
+
+    const videoId = this.currentVideoId
+
+    // Check if we already have this pitch cached
+    const { hasPitchedAudio, loadPitchedAudio, hasRawAudio, loadRawAudio, saveRawAudio } = await import('./audio/pitch-cache')
+
+    if (hasPitchedAudio(videoId, semitones)) {
+      // Already generated — load and play
+      const opusData = await loadPitchedAudio(videoId, semitones)
+      if (opusData) {
+        const buffer = await this.decodeOpusToBuffer(opusData)
+        this.videoPitch = semitones
+        this.startPitchPlayback(buffer)
+        return
+      }
+    }
+
+    // Check if raw audio exists (need it to generate the pitch-shifted version)
+    if (!hasRawAudio(videoId)) {
+      // Need to record the audio first — show dialog
+      const shouldRecord = await this.showPitchRecordingDialog()
+      if (!shouldRecord) return
+
+      // Record the audio
+      const rawBuffer = await this.recordRawAudioForPitchShift(videoId)
+      if (!rawBuffer) return
+
+      // Encode and save raw audio
+      const { encodeToOpusWebM } = await import('./audio/opus-encoder')
+      const rawOpus = await encodeToOpusWebM(rawBuffer, { bitrate: 128_000 })
+      await saveRawAudio(videoId, rawOpus, rawBuffer.duration)
+
+      // Now generate the requested pitch
+      await this.generateAndPlayPitchedAudio(videoId, semitones, rawBuffer)
+      return
+    }
+
+    // Raw exists — load it, generate the pitch, save and play
+    const rawOpusData = await loadRawAudio(videoId)
+    if (!rawOpusData) {
+      console.error('[pitch] Raw audio metadata says exists but could not load')
+      return
+    }
+
+    const rawBuffer = await this.decodeOpusToBuffer(rawOpusData)
+    await this.generateAndPlayPitchedAudio(videoId, semitones, rawBuffer)
+  }
+
+  /**
+   * Generate a pitch-shifted version from raw audio, save it, and start playback.
+   */
+  private async generateAndPlayPitchedAudio(videoId: string, semitones: number, rawBuffer: AudioBuffer) {
+    // Show a brief generating indicator
+    const pitchValueEl = document.getElementById('pitch-value')
+    if (pitchValueEl) pitchValueEl.textContent = '...'
+
+    try {
+      const { timeStretch } = await import('./audio/time-stretch')
+      const { encodeToOpusWebM } = await import('./audio/opus-encoder')
+      const { savePitchedAudio } = await import('./audio/pitch-cache')
+
+      // Pitch shift (tempo = 1.0, just change pitch)
+      const shifted = timeStretch(rawBuffer, 1.0, semitones)
+
+      // Encode to Opus for storage
+      const opusData = await encodeToOpusWebM(shifted, { bitrate: 128_000 })
+      await savePitchedAudio(videoId, semitones, opusData)
+
+      // Start playback
+      this.videoPitch = semitones
+      this.startPitchPlayback(shifted)
+
+      console.log(`[pitch] Generated and cached pitch ${semitones > 0 ? '+' : ''}${semitones} for ${videoId}`)
+    } catch (err) {
+      console.error('[pitch] Failed to generate pitch-shifted audio:', err)
+      if (pitchValueEl) pitchValueEl.textContent = 'ERR'
+    }
+  }
+
+  /**
+   * Start playing a pitch-shifted audio buffer synced to the YouTube video.
+   * Mutes YouTube audio and plays the buffer using Web Audio API.
+   */
+  private startPitchPlayback(buffer: AudioBuffer) {
+    // Stop any existing pitch playback
+    this.stopPitchPlayback()
+
+    // Mute YouTube
+    try { this.player?.mute?.() } catch {}
+
+    // Create audio context
+    const ctx = new AudioContext()
+    this._pitchAudioContext = ctx
+
+    // Track position for drift calculation
+    let pitchStartCtxTime = ctx.currentTime
+    let pitchStartOffset = 0
+
+    const restartFrom = (offset: number) => {
+      if (this._pitchAudioSource) {
+        try { this._pitchAudioSource.stop() } catch {}
+      }
+      const source = ctx.createBufferSource()
+      source.buffer = buffer
+      source.connect(ctx.destination)
+      const clampedOffset = Math.max(0, Math.min(offset, buffer.duration - 0.01))
+      source.start(0, clampedOffset)
+      this._pitchAudioSource = source
+      pitchStartCtxTime = ctx.currentTime
+      pitchStartOffset = clampedOffset
+    }
+
+    // Get current YouTube state and start from there if playing
+    const ytTime = this.player?.getCurrentTime?.() ?? 0
+    const ytState = this.player?.getPlayerState?.()
+    const YT = window.YT
+
+    if (YT && ytState === YT.PlayerState.PLAYING) {
+      restartFrom(ytTime)
+    }
+
+    // Sync with YouTube: poll for play/pause and time drift
+    this._pitchSyncInterval = window.setInterval(() => {
+      if (!this.player || !this._pitchAudioContext) return
+
+      try {
+        const state = this.player.getPlayerState?.()
+        if (!window.YT) return
+
+        const isPlaying = state === window.YT.PlayerState.PLAYING
+
+        if (isPlaying && this._pitchAudioContext.state === 'suspended') {
+          this._pitchAudioContext.resume()
+          const t = this.player.getCurrentTime?.() ?? 0
+          restartFrom(t)
+        } else if (!isPlaying && this._pitchAudioContext.state === 'running') {
+          this._pitchAudioContext.suspend()
+        }
+
+        // Drift correction while playing
+        if (isPlaying && this._pitchAudioSource) {
+          const ytNow = this.player.getCurrentTime?.() ?? 0
+          const elapsed = ctx.currentTime - pitchStartCtxTime
+          const audioPos = pitchStartOffset + elapsed
+
+          if (Math.abs(ytNow - audioPos) > 0.15) {
+            restartFrom(ytNow)
+          }
+        }
+      } catch {
+        // ignore transient errors
+      }
+    }, 100)
+  }
+
+  /**
+   * Stop pitch-shifted audio playback and clean up resources.
+   */
+  private stopPitchPlayback() {
+    if (this._pitchSyncInterval) {
+      clearInterval(this._pitchSyncInterval)
+      this._pitchSyncInterval = null
+    }
+    if (this._pitchAudioSource) {
+      try { this._pitchAudioSource.stop() } catch {}
+      this._pitchAudioSource = null
+    }
+    if (this._pitchAudioContext) {
+      try { this._pitchAudioContext.close() } catch {}
+      this._pitchAudioContext = null
+    }
+  }
+
+  /**
+   * Decode an Opus/WebM ArrayBuffer back to an AudioBuffer.
+   */
+  private async decodeOpusToBuffer(opusData: ArrayBuffer): Promise<AudioBuffer> {
+    const ctx = new AudioContext()
+    const buffer = await ctx.decodeAudioData(opusData.slice(0))  // slice to avoid detached buffer issues
+    try { await ctx.close() } catch {}
+    return buffer
+  }
+
+  /**
+   * Show a dialog informing the user that audio needs to be recorded for pitch shift.
+   * Returns true if user wants to proceed, false if cancelled.
+   */
+  private showPitchRecordingDialog(): Promise<boolean> {
+    return new Promise((resolve) => {
+      const overlay = document.createElement('div')
+      overlay.className = 'fixed inset-0 z-[200] bg-black/70 flex items-center justify-center p-4'
+      overlay.innerHTML = `
+        <div class="bg-zinc-900 border border-white/10 rounded-3xl p-8 max-w-[480px] w-full">
+          <div class="text-emerald-400 text-xs tracking-[2px] mb-2">KEY CHANGE</div>
+          <div class="text-xl font-semibold tracking-tight mb-3">Audio recording needed</div>
+          <div class="text-sm text-zinc-400 mb-6 leading-relaxed">
+            To change the key, we need to capture the audio from this video first.
+            The video will play once from the beginning at normal speed while we record.
+            This only needs to be done once — after that, any key change is instant.
+          </div>
+          <div class="flex gap-3 justify-end">
+            <button id="pitch-rec-cancel" class="px-4 py-2 rounded-xl border border-white/10 text-sm text-zinc-400 hover:text-white transition">Cancel</button>
+            <button id="pitch-rec-start" class="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-sm text-white font-medium transition">Start Recording</button>
+          </div>
+        </div>
+      `
+      document.body.appendChild(overlay)
+
+      overlay.querySelector('#pitch-rec-cancel')!.addEventListener('click', () => {
+        overlay.remove()
+        resolve(false)
+      })
+      overlay.querySelector('#pitch-rec-start')!.addEventListener('click', () => {
+        overlay.remove()
+        resolve(true)
+      })
+      overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) {
+          overlay.remove()
+          resolve(false)
+        }
+      })
+    })
+  }
+
+  /**
+   * Record raw audio from the current YouTube video for pitch shifting.
+   * Similar to the stem separation recording, but skips the AI separation step.
+   * Returns the captured AudioBuffer, or null if cancelled/failed.
+   */
+  private async recordRawAudioForPitchShift(_videoId: string): Promise<AudioBuffer | null> {
+    const videoDuration = this.duration || this.player?.getDuration?.() || 0
+    if (videoDuration <= 0) {
+      alert('Cannot determine video duration. Try playing the video first.')
+      return null
+    }
+
+    const timeEstimate = ` (~${Math.floor(videoDuration / 60)}:${(Math.ceil(videoDuration) % 60).toString().padStart(2, '0')})`
+
+    // Show recording overlay
+    const overlay = document.createElement('div')
+    overlay.className = 'fixed inset-0 z-[200] bg-black/70 flex items-center justify-center p-4'
+    overlay.innerHTML = `
+      <div class="bg-zinc-900 border border-white/10 rounded-3xl p-8 max-w-[520px] w-full">
+        <div class="text-emerald-400 text-xs tracking-[2px] mb-1">RECORDING AUDIO</div>
+        <div class="text-xl font-semibold tracking-tight mb-2">Capturing video audio${timeEstimate}</div>
+        <div class="text-sm text-zinc-400 mb-4">Please wait while the video plays. Do not switch tabs.</div>
+        <div class="h-2 bg-zinc-800 rounded-full overflow-hidden mb-3">
+          <div id="pitch-rec-bar" class="h-2 bg-emerald-500 w-[3%] transition-all"></div>
+        </div>
+        <div id="pitch-rec-status" class="text-sm text-zinc-400">Requesting tab audio access...</div>
+        <div class="mt-5">
+          <button id="pitch-rec-cancel" class="text-sm text-zinc-400 hover:text-zinc-200">Cancel</button>
+        </div>
+      </div>
+    `
+    document.body.appendChild(overlay)
+
+    const progressBar = overlay.querySelector('#pitch-rec-bar') as HTMLElement
+    const statusEl = overlay.querySelector('#pitch-rec-status') as HTMLElement
+    const abortController = new AbortController()
+
+    overlay.querySelector('#pitch-rec-cancel')!.addEventListener('click', () => {
+      abortController.abort()
+    })
+
+    // Disable looping during recording
+    const prevIsLooping = this.isLooping
+    this.isLooping = false
+    this.stopTimeMonitor()
+
+    // Save and force volume
+    let prevVolume = 100, prevMuted = false
+    try {
+      if (this.player && this.playerReady) {
+        prevVolume = this.player.getVolume?.() ?? 100
+        prevMuted = this.player.isMuted?.() ?? false
+      }
+    } catch {}
+
+    // Set up auto-stop when video ends
+    this._onVideoEndedDuringCapture = () => {
+      abortController.abort()
+    }
+
+    try {
+      const { captureTabAudio } = await import('./youtube/tab-audio-capture')
+
+      const result = await captureTabAudio({
+        durationSeconds: videoDuration,
+        signal: abortController.signal,
+        onPermissionGranted: async () => {
+          // Start video from beginning at 1x
+          if (this.player && this.playerReady) {
+            this.player.unMute?.()
+            this.player.setVolume?.(100)
+            this.player.seekTo(0, true)
+            this.player.setPlaybackRate(1)
+            this.player.playVideo()
+          }
+          await new Promise(r => setTimeout(r, 450))
+        },
+        onProgress: (info) => {
+          if (info.phase === 'recording') {
+            statusEl.textContent = info.message
+            if (info.percent !== undefined) {
+              progressBar.style.width = `${Math.min(95, info.percent)}%`
+            }
+          } else if (info.phase === 'processing') {
+            statusEl.textContent = 'Processing...'
+            progressBar.style.width = '95%'
+          }
+        },
+      })
+
+      this._onVideoEndedDuringCapture = null
+      overlay.remove()
+
+      // Restore player state
+      this.isLooping = prevIsLooping
+      try {
+        if (this.player && this.playerReady) {
+          this.player.pauseVideo?.()
+          if (prevMuted) this.player.mute?.(); else this.player.unMute?.()
+          this.player.setVolume?.(prevVolume)
+        }
+      } catch {}
+      this.startTimeMonitor()
+
+      return result.buffer
+    } catch (err: any) {
+      this._onVideoEndedDuringCapture = null
+      overlay.remove()
+
+      // Restore player state
+      this.isLooping = prevIsLooping
+      try {
+        if (this.player && this.playerReady) {
+          this.player.pauseVideo?.()
+          if (prevMuted) this.player.mute?.(); else this.player.unMute?.()
+          this.player.setVolume?.(prevVolume)
+        }
+      } catch {}
+      this.startTimeMonitor()
+
+      if (err.message?.includes('cancelled') || err.message?.includes('abort')) {
+        return null
+      }
+      console.error('[pitch] Recording failed:', err)
+      alert(`Failed to record audio: ${err.message}`)
+      return null
     }
   }
 

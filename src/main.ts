@@ -218,6 +218,7 @@ class WebLooper {
   private currentVideoId: string | null = null
   private attachedStemPlayer: any = null   // StemPlayer when stems are synced to this YT video
   private videoPitch = 0                    // Current key shift for this video (affects attached stems)
+  private _onVideoEndedDuringCapture: (() => void) | null = null  // Callback to stop recording when video ends
   private duration = 0
   private start = 0
   private end = 0
@@ -1223,6 +1224,11 @@ class WebLooper {
       if (this.isLooping) {
         this.seekTo(this.start)
         setTimeout(() => this.player?.playVideo(), 60)
+      }
+      // Notify any active recording that the video has ended
+      if (this._onVideoEndedDuringCapture) {
+        this._onVideoEndedDuringCapture()
+        this._onVideoEndedDuringCapture = null
       }
     }
 
@@ -2474,6 +2480,7 @@ class WebLooper {
         clearInterval(volumeLockInterval)
         volumeLockInterval = null
       }
+      this._onVideoEndedDuringCapture = null
       try { this.restorePlaybackStateAfterCapture(originalPlaybackRate) } catch {}
       // Restore whatever loop state the user had before they clicked "Separate Stems"
       this.isLooping = prevIsLooping
@@ -2509,6 +2516,11 @@ class WebLooper {
     stopBtn.addEventListener('click', () => {
       abortController.abort()
     })
+
+    // Auto-stop recording when the YouTube video reaches ENDED state
+    this._onVideoEndedDuringCapture = () => {
+      abortController.abort()
+    }
 
     try {
       // ============================================
@@ -2568,6 +2580,9 @@ class WebLooper {
       })
 
       if (cancelled) return
+
+      // Recording is finished (full or early-stop). Clear the video-ended hook.
+      this._onVideoEndedDuringCapture = null
 
       // Recording is finished (full or early-stop). Stop the volume watchdog immediately.
       if (volumeLockInterval) {

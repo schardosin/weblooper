@@ -212,20 +212,40 @@ export async function captureTabAudio(options: CaptureOptions): Promise<CaptureR
       })
 
       // Assemble captured chunks into an AudioBuffer
-      const buffer = new AudioBuffer({
+      const rawBuffer = new AudioBuffer({
         length: totalSamples,
         numberOfChannels: 2,
         sampleRate,
       })
 
       let offset = 0
-      const leftChannel = buffer.getChannelData(0)
-      const rightChannel = buffer.getChannelData(1)
+      const leftChannel = rawBuffer.getChannelData(0)
+      const rightChannel = rawBuffer.getChannelData(1)
 
       for (let i = 0; i < leftChunks.length; i++) {
         leftChannel.set(leftChunks[i], offset)
         rightChannel.set(rightChunks[i], offset)
         offset += leftChunks[i].length
+      }
+
+      // Trim excess from the beginning: the recording starts before the video plays,
+      // but ends precisely when the video finishes. So all excess is at the start.
+      // We keep exactly `durationSeconds` from the end of the buffer.
+      const excess = rawBuffer.duration - durationSeconds
+      let buffer = rawBuffer
+      if (excess > 0.05) {
+        const trimSamples = Math.round(excess * sampleRate)
+        const trimmedLength = totalSamples - trimSamples
+        if (trimmedLength > 0) {
+          buffer = new AudioBuffer({
+            length: trimmedLength,
+            numberOfChannels: 2,
+            sampleRate,
+          })
+          buffer.getChannelData(0).set(leftChannel.subarray(trimSamples))
+          buffer.getChannelData(1).set(rightChannel.subarray(trimSamples))
+          console.log(`[tab-audio-capture] Trimmed ${excess.toFixed(3)}s (${trimSamples} samples) from start to align with video`)
+        }
       }
 
       const captureDuration = (Date.now() - startTime) / 1000

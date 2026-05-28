@@ -4969,10 +4969,25 @@ class WebLooper {
     const label = document.getElementById('drive-sync-label')
     if (!btn || !label) return
 
-    // Check initial auth state
-    import('./drive').then(({ isSignedIn, onAuthChange }) => {
+    // Check initial auth state + attempt auto-login if user was previously signed in
+    import('./drive').then(({ isSignedIn, onAuthChange, tryAutoLogin }) => {
       this.updateDriveSyncUI(isSignedIn())
       onAuthChange((signedIn) => this.updateDriveSyncUI(signedIn))
+
+      // Auto-login: silently get a fresh token if user was previously signed in
+      if (!isSignedIn()) {
+        tryAutoLogin().then(() => {
+          if (isSignedIn()) {
+            // Refresh cloud data after auto-login
+            import('./drive').then(({ fetchCloudSessions, fetchCloudVideoStates }) => {
+              fetchCloudSessions().catch(() => {})
+              fetchCloudVideoStates().catch(() => {})
+              this.renderInitialPreviousStems()
+              this.renderInitialRecentVideos()
+            })
+          }
+        }).catch(() => {})
+      }
     })
 
     btn.addEventListener('click', async () => {

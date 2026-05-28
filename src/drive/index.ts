@@ -1,4 +1,4 @@
-export { signIn, signOut, isSignedIn, getAccessToken, onAuthChange, getValidToken } from './auth'
+export { signIn, signOut, isSignedIn, getAccessToken, onAuthChange, getValidToken, tryAutoLogin } from './auth'
 export {
   uploadStemSession,
   downloadStemSession,

@@ -968,7 +968,6 @@ class WebLooper {
 
     // Change video
     e.changeVideoBtn.addEventListener('click', () => {
-      this.attachedStemPlayer = null
       this.unloadVideo()
       e.loaderSection.classList.remove('hidden')
       e.playerSection.classList.add('hidden')
@@ -1335,7 +1334,7 @@ class WebLooper {
         return
       }
 
-      await this.attachStemsToVideo(videoId, loaded.stems, true) // with mixer
+      await this.attachStemsToVideo(videoId, loaded.stems, false) // silent — stems available for pitch shift but no mixer shown
     } catch (err) {
       console.warn('[weblooper] Failed to attach stems to YouTube video', err)
     }
@@ -1481,33 +1480,6 @@ class WebLooper {
    * Load a YouTube video and attach pre-loaded stems to it.
    * Used when restoring a saved YouTube stem session from the landing page.
    */
-  private async loadYouTubeVideoWithStems(
-    videoId: string,
-    stems: Array<{ name: string; buffer: AudioBuffer }>
-  ) {
-    // Show the player section, hide the loader
-    this.els.loaderSection.classList.add('hidden')
-    this.els.playerSection.classList.remove('hidden')
-
-    // Load the YouTube video
-    this.loadVideoFromUrl(videoId)
-
-    // Wait for the player to be ready
-    await new Promise<void>((resolve) => {
-      const checkReady = setInterval(() => {
-        if (this.playerReady && this.player) {
-          clearInterval(checkReady)
-          resolve()
-        }
-      }, 200)
-      // Timeout after 15 seconds
-      setTimeout(() => { clearInterval(checkReady); resolve() }, 15000)
-    })
-
-    // Use the shared attachment helper (with mixer, since this is the restore-from-saved-stems path)
-    await this.attachStemsToVideo(videoId, stems, true)
-  }
-
   /**
    * Entry point for local audio files.
    * This is the on-ramp for fully client-side stem separation (user provides audio,
@@ -1698,17 +1670,12 @@ class WebLooper {
             // Enter practice mode directly with the persisted stems (no re-separation)
             this.els.loaderSection.classList.add('hidden')
 
-            // If this is a YouTube session, load the video with stems attached
-            if (loaded.meta.youtubeVideoId) {
-              await this.loadYouTubeVideoWithStems(loaded.meta.youtubeVideoId, loaded.stems)
-            } else {
-              // Local file — use the audio-only stem practice view
-              await this.enterStemPracticeWithRealStems(
-                { fileName: loaded.meta.fileName || loaded.meta.youtubeVideoTitle || 'YouTube Video', duration: loaded.meta.duration },
-                loaded.stems,
-                loaded.meta,
-              )
-            }
+            // Always open the pure stem practice view (no video) — regardless of source
+            await this.enterStemPracticeWithRealStems(
+              { fileName: loaded.meta.fileName || loaded.meta.youtubeVideoTitle || 'Stem Session', duration: loaded.meta.duration },
+              loaded.stems,
+              loaded.meta,
+            )
           } else {
             console.error('[stems] Failed to load persisted session', sess.id, sess.fileName)
             try {
@@ -1848,15 +1815,12 @@ class WebLooper {
             if (loaded && loaded.stems.length > 0) {
               this.els.loaderSection.classList.add('hidden')
 
-              if (loaded.meta.youtubeVideoId) {
-                await this.loadYouTubeVideoWithStems(loaded.meta.youtubeVideoId, loaded.stems)
-              } else {
-                await this.enterStemPracticeWithRealStems(
-                  { fileName: loaded.meta.fileName || loaded.meta.youtubeVideoTitle || 'YouTube Video', duration: loaded.meta.duration },
-                  loaded.stems,
-                  loaded.meta,
-                )
-              }
+              // Always open the pure stem practice view (no video)
+              await this.enterStemPracticeWithRealStems(
+                { fileName: loaded.meta.fileName || loaded.meta.youtubeVideoTitle || 'Stem Session', duration: loaded.meta.duration },
+                loaded.stems,
+                loaded.meta,
+              )
             } else {
               console.error('[stems] Failed to load persisted session', sess.id, sess.fileName)
               try {
@@ -4241,7 +4205,12 @@ class WebLooper {
   }
 
   private unloadVideo() {
-    this.attachedStemPlayer = null
+    // Stop and dispose the attached stem player (pitch-shifted audio for YouTube)
+    if (this.attachedStemPlayer) {
+      try { this.attachedStemPlayer.dispose?.() } catch {}
+      this.attachedStemPlayer = null
+    }
+    this.videoPitch = 0
     this.stopTimeMonitor()
     if (this.player) {
       try { this.player.pauseVideo() } catch {}
@@ -4269,11 +4238,12 @@ class WebLooper {
     this.presets = []
     this.lastKnownTime = 0
 
-    // Clean up stem sync and player
+    // Clean up stem sync interval
     if ((this as any).__stemSyncInterval) {
       clearInterval((this as any).__stemSyncInterval)
       ;(this as any).__stemSyncInterval = null
     }
+    // Legacy cleanup (in case old references remain)
     if ((this as any).__currentYouTubeStemPlayer) {
       try { (this as any).__currentYouTubeStemPlayer.dispose?.() } catch {}
       ;(this as any).__currentYouTubeStemPlayer = null

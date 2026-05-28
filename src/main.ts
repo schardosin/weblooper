@@ -799,6 +799,19 @@ class WebLooper {
                       </div>
                       <div id="speed-chips" class="flex flex-wrap gap-1.5"></div>
                     </div>
+
+                    <!-- Key / Pitch (affects attached stems) -->
+                    <div class="mt-4">
+                      <div class="flex items-baseline justify-between mb-1.5 px-0.5">
+                        <div class="text-xs font-medium tracking-widest text-zinc-400">KEY</div>
+                        <div class="flex items-center gap-1.5">
+                          <button id="pitch-dec" class="w-6 h-6 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-white/10 text-zinc-300 text-xs font-bold flex items-center justify-center transition">−</button>
+                          <div id="pitch-value" class="font-mono text-sm text-emerald-400 min-w-[3.2rem] text-center">0</div>
+                          <button id="pitch-inc" class="w-6 h-6 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-white/10 text-zinc-300 text-xs font-bold flex items-center justify-center transition">+</button>
+                        </div>
+                      </div>
+                      <div class="text-[10px] text-zinc-500 px-0.5">Semitones (requires stems for full effect)</div>
+                    </div>
                   </div>
 
                   <div class="bg-zinc-900 border border-white/10 rounded-3xl p-5">
@@ -1046,6 +1059,35 @@ class WebLooper {
     speedInc.addEventListener('click', () => {
       const next = Math.min(2.0, Math.round((this.playbackRate + 0.05) * 100) / 100)
       this.setPlaybackRate(next)
+    })
+
+    // Key / Pitch shift (semitones) — primarily affects attached stem player
+    let videoPitch = 0
+    const pitchValueEl = document.getElementById('pitch-value')!
+    const pitchDec = document.getElementById('pitch-dec')!
+    const pitchInc = document.getElementById('pitch-inc')!
+
+    function updateVideoPitchUI() {
+      pitchValueEl.textContent = videoPitch > 0 ? `+${videoPitch}` : String(videoPitch)
+    }
+
+    pitchDec.addEventListener('click', async () => {
+      videoPitch = Math.max(-12, videoPitch - 1)
+      // If stems are attached, shift them
+      const attachedStemPlayer = (this as any).__attachedStemPlayer
+      if (attachedStemPlayer) {
+        await attachedStemPlayer.setPitch(videoPitch)
+      }
+      updateVideoPitchUI()
+    })
+
+    pitchInc.addEventListener('click', async () => {
+      videoPitch = Math.min(12, videoPitch + 1)
+      const attachedStemPlayer = (this as any).__attachedStemPlayer
+      if (attachedStemPlayer) {
+        await attachedStemPlayer.setPitch(videoPitch)
+      }
+      updateVideoPitchUI()
     })
 
     // Shortcuts modal
@@ -3123,6 +3165,7 @@ class WebLooper {
       end: number
       isLooping: boolean
       playbackRate: number
+      pitchSemitones?: number
       presets: LoopPreset[]
     }
 
@@ -3143,6 +3186,7 @@ class WebLooper {
     let loopEnd = savedState?.end ?? decoded.duration
     let isLooping = savedState?.isLooping ?? false
     let currentRate = savedState?.playbackRate ?? 1
+    let currentPitch = savedState?.pitchSemitones ?? 0
 
     // Seed presets from central session meta if available (enables cross-device sync via Drive)
     // Fall back to (or merge with) the per-stem local practice state.
@@ -3156,9 +3200,12 @@ class WebLooper {
     stemPlayer.setLoop(loopStart, loopEnd)
     stemPlayer.setIsLooping(isLooping)
     await stemPlayer.setPlaybackRate(currentRate)
+    if (currentPitch !== 0) {
+      await stemPlayer.setPitch(currentPitch)
+    }
 
     function persistStemState() {
-      saveStemState({ start: loopStart, end: loopEnd, isLooping, playbackRate: currentRate, presets })
+      saveStemState({ start: loopStart, end: loopEnd, isLooping, playbackRate: currentRate, pitchSemitones: currentPitch, presets })
     }
 
     // ---------- UI ----------
@@ -3276,6 +3323,19 @@ class WebLooper {
               </div>
               <div id="stem-speed-real-chips" class="flex flex-wrap gap-1.5"></div>
             </div>
+
+            <!-- Key / Pitch Shift -->
+            <div class="mt-4">
+              <div class="flex items-baseline justify-between mb-2 px-0.5">
+                <div class="text-xs font-medium tracking-widest text-zinc-400">KEY</div>
+                <div class="flex items-center gap-1.5">
+                  <button id="stem-pitch-dec-real" class="w-6 h-6 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-white/10 text-zinc-300 text-xs font-bold flex items-center justify-center transition">−</button>
+                  <div id="stem-pitch-real" class="font-mono text-sm text-emerald-400 min-w-[3.2rem] text-center">0</div>
+                  <button id="stem-pitch-inc-real" class="w-6 h-6 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-white/10 text-zinc-300 text-xs font-bold flex items-center justify-center transition">+</button>
+                </div>
+              </div>
+              <div class="text-[10px] text-zinc-500 px-0.5">Semitones (±12 = 1 octave)</div>
+            </div>
           </div>
 
           <div class="bg-zinc-900 border border-white/10 rounded-3xl p-5">
@@ -3309,6 +3369,16 @@ class WebLooper {
     const presetsListEl = document.getElementById('stem-presets-list')!
     const noPresetsHint = document.getElementById('stem-no-presets-hint')!
     const savePresetBtn = document.getElementById('stem-save-preset-btn')!
+
+    // Pitch elements (hoisted early to avoid TDZ when updatePitchUI is called in initial state)
+    const pitchLabel = document.getElementById('stem-pitch-real')!
+    const pitchDecBtn = document.getElementById('stem-pitch-dec-real')!
+    const pitchIncBtn = document.getElementById('stem-pitch-inc-real')!
+
+    function updatePitchUI() {
+      pitchLabel.textContent = currentPitch > 0 ? `+${currentPitch}` : String(currentPitch)
+      persistStemState()
+    }
 
     // Build timeline with handles
     timeline.innerHTML = `
@@ -3460,6 +3530,7 @@ class WebLooper {
     // ---------- Initial UI state ----------
     updateLoopUI()
     renderStemPresets()
+    updatePitchUI()
 
     // Ensure practice local state (including any cloud-seeded presets) is persisted
     persistStemState()
@@ -3624,6 +3695,19 @@ class WebLooper {
     speedIncBtn.onclick = () => {
       const next = Math.min(2.0, Math.round((stemPlayer.getCurrentPlaybackRate() + 0.05) * 100) / 100)
       stemPlayer.setPlaybackRate(next); updateSpeed()
+    }
+
+    // Wire pitch buttons (elements were already gotten earlier)
+    pitchDecBtn.onclick = async () => {
+      currentPitch = Math.max(-12, currentPitch - 1)
+      await stemPlayer.setPitch(currentPitch)
+      updatePitchUI()
+    }
+
+    pitchIncBtn.onclick = async () => {
+      currentPitch = Math.min(12, currentPitch + 1)
+      await stemPlayer.setPitch(currentPitch)
+      updatePitchUI()
     }
 
     // ---------- Mixer ----------

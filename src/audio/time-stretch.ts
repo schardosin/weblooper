@@ -39,30 +39,38 @@ class AudioBufferSource {
 }
 
 /**
- * Time-stretch an AudioBuffer to a new tempo without changing pitch.
+ * Time-stretch an AudioBuffer with optional independent pitch shift.
  *
- * @param buffer   The source AudioBuffer
- * @param tempo    The tempo multiplier (e.g. 0.75 = 75% speed, 1.5 = 150% speed)
- * @returns        A new AudioBuffer at the adjusted tempo
+ * @param buffer          The source AudioBuffer
+ * @param tempo           The tempo multiplier (e.g. 0.75 = 75% speed)
+ * @param pitchSemitones  Pitch shift in semitones (positive = higher key, negative = lower key). 0 = no change.
+ * @returns               A new AudioBuffer at the adjusted tempo and pitch
  */
-export function timeStretch(buffer: AudioBuffer, tempo: number): AudioBuffer {
-  if (Math.abs(tempo - 1.0) < 0.01) {
-    // No stretching needed
+export function timeStretch(buffer: AudioBuffer, tempo: number, pitchSemitones: number = 0): AudioBuffer {
+  const needsTempo = Math.abs(tempo - 1.0) >= 0.01
+  const needsPitch = Math.abs(pitchSemitones) >= 0.01
+
+  if (!needsTempo && !needsPitch) {
     return buffer
   }
 
   const sampleRate = buffer.sampleRate
-  const numChannels = Math.min(buffer.numberOfChannels, 2) // SoundTouch handles stereo
+  const numChannels = Math.min(buffer.numberOfChannels, 2)
   const originalLength = buffer.length
 
-  // Expected output length (approximate — SoundTouch may produce slightly more/less)
+  // Expected output length (approximate)
   const expectedLength = Math.ceil(originalLength / tempo)
 
   // Set up SoundTouch
   const st = new SoundTouch()
   st.tempo = tempo
-  // Keep pitch at 1.0 (no pitch shift)
-  st.pitch = 1.0
+
+  // Convert semitones to pitch factor (each semitone = 2^(1/12))
+  if (needsPitch) {
+    st.pitch = Math.pow(2, pitchSemitones / 12)
+  } else {
+    st.pitch = 1.0
+  }
 
   // Source adapter
   const source = new AudioBufferSource(buffer)
@@ -118,16 +126,17 @@ export function timeStretch(buffer: AudioBuffer, tempo: number): AudioBuffer {
 }
 
 /**
- * Time-stretch multiple AudioBuffers in parallel (for all stems).
- * Processes sequentially to avoid blocking the main thread too badly,
- * yielding between stems.
+ * Time-stretch (and optionally pitch-shift) multiple AudioBuffers.
+ * Used for stem practice with independent tempo and key control.
  */
 export async function timeStretchStems(
   stems: Array<{ name: string; buffer: AudioBuffer }>,
   tempo: number,
+  pitchSemitones: number = 0,
   onProgress?: (stemIndex: number, totalStems: number) => void,
 ): Promise<Array<{ name: string; buffer: AudioBuffer }>> {
-  if (Math.abs(tempo - 1.0) < 0.01) {
+  const needsProcessing = Math.abs(tempo - 1.0) >= 0.01 || Math.abs(pitchSemitones) >= 0.01
+  if (!needsProcessing) {
     return stems
   }
 
@@ -136,11 +145,10 @@ export async function timeStretchStems(
   for (let i = 0; i < stems.length; i++) {
     onProgress?.(i, stems.length)
 
-    // Yield to the event loop between stems to keep UI responsive
     await new Promise(resolve => setTimeout(resolve, 0))
 
-    const stretched = timeStretch(stems[i].buffer, tempo)
-    results.push({ name: stems[i].name, buffer: stretched })
+    const processed = timeStretch(stems[i].buffer, tempo, pitchSemitones)
+    results.push({ name: stems[i].name, buffer: processed })
   }
 
   onProgress?.(stems.length, stems.length)

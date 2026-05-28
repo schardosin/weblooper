@@ -56,6 +56,7 @@ export class StemPlayer {
   private loopEnd = 0
   private isLooping = false
   private playbackRate = 1.0
+  private pitchSemitones = 0
 
   private animationFrame: number | null = null
   private listeners: ((e: StemPlayerEvent) => void)[] = []
@@ -165,48 +166,57 @@ export class StemPlayer {
     this.playbackRate = newRate
     this.offset = currentTime
 
-    // Increment generation so any in-progress stretch from a prior call is discarded
-    const generation = ++this.stretchGeneration
-
-    // Time-stretch all stems to the new tempo (pitch-preserved)
-    if (Math.abs(newRate - 1.0) < 0.01) {
-      // Rate is ~1.0, use original buffers
-      this.tracks = this.originalTracks
-    } else {
-      // Compute stretched buffers
-      this.isStretching = true
-      this.emit({ type: 'stretching', active: true })
-
-      try {
-        const stretched: StemTrack[] = []
-        for (let i = 0; i < this.originalTracks.length; i++) {
-          // Yield between stems to keep UI responsive
-          await new Promise(resolve => setTimeout(resolve, 0))
-
-          // Abort if a newer call has superseded this one
-          if (this.stretchGeneration !== generation) return
-
-          const stretchedBuffer = timeStretch(this.originalTracks[i].buffer, newRate)
-          stretched.push({ name: this.originalTracks[i].name, buffer: stretchedBuffer })
-        }
-
-        // Final check before applying
-        if (this.stretchGeneration !== generation) return
-
-        this.tracks = stretched
-      } catch (err) {
-        console.error('[StemPlayer] Time-stretching failed, falling back to rate change:', err)
-        // Fallback: use original buffers with native playbackRate (will shift pitch)
-        this.tracks = this.originalTracks
-      }
-
-      this.isStretching = false
-      this.emit({ type: 'stretching', active: false })
-    }
+    await this.reprocessAudio()
 
     if (wasPlaying) {
       this.play()
     }
+  }
+
+  /**
+   * Re-process all stems with current playbackRate + pitchSemitones.
+   * Used by both setPlaybackRate and setPitch.
+   */
+  private async reprocessAudio() {
+    const needsProcessing =
+      Math.abs(this.playbackRate - 1.0) >= 0.01 ||
+      Math.abs(this.pitchSemitones) >= 0.01
+
+    // Increment generation so any in-progress processing is aborted
+    const generation = ++this.stretchGeneration
+
+    if (!needsProcessing) {
+      this.tracks = this.originalTracks
+      return
+    }
+
+    this.isStretching = true
+    this.emit({ type: 'stretching', active: true })
+
+    try {
+      const processed: StemTrack[] = []
+      for (let i = 0; i < this.originalTracks.length; i++) {
+        await new Promise(resolve => setTimeout(resolve, 0))
+
+        if (this.stretchGeneration !== generation) return
+
+        const processedBuffer = timeStretch(
+          this.originalTracks[i].buffer,
+          this.playbackRate,
+          this.pitchSemitones
+        )
+        processed.push({ name: this.originalTracks[i].name, buffer: processedBuffer })
+      }
+
+      if (this.stretchGeneration !== generation) return
+      this.tracks = processed
+    } catch (err) {
+      console.error('[StemPlayer] Audio processing failed:', err)
+      this.tracks = this.originalTracks
+    }
+
+    this.isStretching = false
+    this.emit({ type: 'stretching', active: false })
   }
 
   setLoop(start: number, end: number) {
@@ -216,6 +226,23 @@ export class StemPlayer {
 
   setIsLooping(enabled: boolean) {
     this.isLooping = enabled
+  }
+
+  /**
+   * Set pitch shift in semitones (independent of tempo).
+   * Positive = higher key, negative = lower key.
+   * This will re-process the audio buffers.
+   */
+  async setPitch(semitones: number) {
+    const newPitch = Math.max(-12, Math.min(12, Math.round(semitones))) // reasonable range: ±1 octave
+    if (newPitch === this.pitchSemitones) return
+
+    this.pitchSemitones = newPitch
+    await this.reprocessAudio()
+  }
+
+  getCurrentPitch(): number {
+    return this.pitchSemitones
   }
 
   restartFromLoopStart() {

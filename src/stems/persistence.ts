@@ -26,6 +26,12 @@ export interface StemSessionMeta {
 
   /** User-saved loop presets for this stem session (synced via Drive) */
   presets?: import('./types').LoopPreset[]
+
+  /**
+   * AI-generated (or user-edited) timed lyrics + chords for this session.
+   * This is the main data structure for the lyrics + chords feature.
+   */
+  lyricTrack?: import('../lyrics/types').LyricTrack
 }
 
 const STORAGE_KEY = 'weblooper_stem_sessions_v1'
@@ -355,6 +361,26 @@ export function updateStemSessionPresets(id: string, presets: import('./types').
   const idx = list.findIndex(m => m.id === id)
   if (idx >= 0) {
     list[idx] = { ...list[idx], presets: [...presets] }
+    writeMetaList(list)
+  }
+}
+
+/**
+ * Update or set the lyric track for an existing stem session.
+ * This is the main persistence hook for the lyrics + chords feature.
+ */
+export function updateStemSessionLyricTrack(
+  id: string,
+  lyricTrack: import('../lyrics/types').LyricTrack | undefined
+): void {
+  const list = readMetaList()
+  const idx = list.findIndex(m => m.id === id)
+  if (idx >= 0) {
+    if (lyricTrack) {
+      list[idx] = { ...list[idx], lyricTrack }
+    } else {
+      delete list[idx].lyricTrack
+    }
     writeMetaList(list)
   }
 }

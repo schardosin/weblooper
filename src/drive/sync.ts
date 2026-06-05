@@ -469,6 +469,148 @@ export function isVideoInCloud(videoId: string): boolean {
  * Update metadata for an existing cloud stem session (e.g. to push newly saved
  * loop presets). This updates both the per-session meta.json and the root manifest.
  */
+/**
+ * Load a lyricTrack from a cloud session folder if it exists.
+ * Useful for loading results produced by Colab.
+ *
+ * Strategy: First try to read lyricTrack from the session's meta.json (which
+ * weblooper created and can access via drive.file scope even after Colab patches it).
+ * Falls back to looking for a standalone lyricTrack.json file (in case a broader
+ * scope is available in future).
+ */
+export async function loadLyricTrackFromCloud(sessionId: string): Promise<import('../lyrics/types').LyricTrack | null> {
+  if (!isSignedIn()) {
+    console.warn('[drive-sync] loadLyricTrackFromCloud: not signed in')
+    return null
+  }
+  try {
+    const token = await getValidToken()
+
+    // Refresh the manifest cache to ensure we have the latest session list
+    await fetchCloudSessions()
+
+    const sessionIndex = manifestCache?.sessions.findIndex(s => s.id === sessionId) ?? -1
+    if (sessionIndex < 0 || !manifestCache) {
+      console.warn('[drive-sync] loadLyricTrackFromCloud: session not found in manifest', sessionId)
+      return null
+    }
+
+    const session = manifestCache.sessions[sessionIndex]
+    if (!session.driveFolderId) {
+      console.warn('[drive-sync] loadLyricTrackFromCloud: session has no driveFolderId', sessionId)
+      return null
+    }
+
+    // Strategy 1: Read the meta.json that weblooper created (accessible via drive.file scope).
+    // The Colab notebook patches lyricTrack into this file.
+    const metaFiles = await drive.listFiles(token, `'${session.driveFolderId}' in parents and name = 'meta.json' and trashed = false`)
+    if (metaFiles.length) {
+      const metaTxt = await drive.downloadFileAsText(token, metaFiles[0].id)
+      const meta = JSON.parse(metaTxt)
+      if (meta.lyricTrack) {
+        console.log('[drive-sync] loadLyricTrackFromCloud: found lyricTrack inside meta.json')
+        return meta.lyricTrack
+      }
+    }
+
+    // Strategy 2: Try standalone lyricTrack.json (only works if the app has broader scope
+    // or if weblooper itself created this file in a future version).
+    const files = await drive.listFiles(token, `'${session.driveFolderId}' in parents and name = 'lyricTrack.json' and trashed = false`)
+    if (files.length) {
+      const txt = await drive.downloadFileAsText(token, files[0].id)
+      console.log('[drive-sync] loadLyricTrackFromCloud: found standalone lyricTrack.json')
+      return JSON.parse(txt)
+    }
+
+    console.warn('[drive-sync] loadLyricTrackFromCloud: no lyricTrack found in Drive folder', session.driveFolderId)
+    return null
+  } catch (err) {
+    console.warn('[drive-sync] Failed to load lyricTrack from cloud', err)
+    return null
+  }
+}
+
+/**
+ * Create (or overwrite) a ready-to-run Colab notebook inside the given session's
+ * Drive folder, with SESSION_FOLDER_ID already filled in from the weblooper context.
+ *
+ * - Fetches the static template served at /notebooks/colab_lyrics_processor.ipynb
+ * - Mutates the configuration cell so the ID is a literal (no paste step for the user)
+ * - Uses a stable name so re-clicking "Re-process" just refreshes the content
+ * - Uploads with the Colab-specific mime type so Drive/Colab treat it as a notebook
+ * - Returns the Drive file ID; caller can then open https://colab.research.google.com/drive/${fileId}
+ */
+export async function createColabNotebookForSession(
+  sessionId: string,
+  driveFolderId: string,
+): Promise<string> {
+  if (!isSignedIn()) {
+    throw new Error('Please sign in to Google Drive first (the notebook must live in your Drive).')
+  }
+  if (!driveFolderId) {
+    throw new Error('Missing driveFolderId for this stem session. Upload the session to Drive before using Colab.')
+  }
+
+  const token = await getValidToken()
+
+  // Fetch the served template (works in dev and prod because of public/notebooks/)
+  const res = await fetch('/notebooks/colab_lyrics_processor.ipynb')
+  if (!res.ok) {
+    throw new Error(`Failed to load notebook template (status ${res.status}). Is the app serving /notebooks/?`)
+  }
+  const raw = await res.text()
+  const nb = JSON.parse(raw) as any
+
+  // Find the configuration cell robustly (the one with the Python assignment, not just mentions in markdown).
+  // Our template has "# @title 4. CONFIGURATION" for it (cell index 4).
+  let configCell = (nb.cells || []).find((c: any) =>
+    Array.isArray(c.source) &&
+    c.source.some((l: string) => l.includes('SESSION_FOLDER_ID =') || l.includes('@title 4') || l.includes('__WEBLOOPER_SESSION_FOLDER_ID__'))
+  )
+  if (!configCell) {
+    // Fallback to the known index in our template (4)
+    configCell = nb.cells && nb.cells[4]
+  }
+  if (configCell && Array.isArray(configCell.source)) {
+    configCell.source = configCell.source.map((line: string) =>
+      line.includes('SESSION_FOLDER_ID') || line.includes('__WEBLOOPER_SESSION_FOLDER_ID__')
+        ? `SESSION_FOLDER_ID = "${driveFolderId}"   # pre-filled by weblooper — do not edit\n`
+        : line,
+    )
+  } else {
+    // Last-resort: brute-force string replace inside the raw JSON text then re-parse
+    const replaced = raw.replace(
+      /SESSION_FOLDER_ID\s*=\s*["'][^"']*["']/g,
+      `SESSION_FOLDER_ID = "${driveFolderId}"`,
+    ).replace(/__WEBLOOPER_SESSION_FOLDER_ID__/g, driveFolderId)
+    Object.assign(nb, JSON.parse(replaced))
+  }
+
+  // Ensure it will be recognized nicely as a Colab notebook
+  if (!nb.metadata) nb.metadata = {}
+  if (!nb.metadata.colab) nb.metadata.colab = {}
+  nb.metadata.colab.provenance = nb.metadata.colab.provenance || []
+  // A nice display name when the user looks at the file in Drive
+  nb.metadata.name = `weblooper-lyrics-${sessionId.slice(0, 8)}`
+
+  const notebookJson = JSON.stringify(nb)
+
+  const fileName = 'weblooper-lyrics-processor.ipynb'
+  const mimeType = 'application/vnd.google.colaboratory' // makes Drive show the Colab icon / open behavior
+
+  // Idempotent: reuse existing file (overwrite content) so we don't litter the folder on every "Re-process"
+  const existing = await drive.findFileByName(token, fileName, driveFolderId)
+  if (existing?.id) {
+    await drive.updateFile(token, existing.id, notebookJson, 'application/json')
+    console.log('[drive-sync] Refreshed Colab notebook in session folder:', existing.id)
+    return existing.id
+  }
+
+  const fileId = await drive.uploadFile(token, fileName, notebookJson, mimeType, driveFolderId)
+  console.log('[drive-sync] Created Colab notebook in session folder:', fileId)
+  return fileId
+}
+
 export async function updateCloudStemMeta(
   sessionId: string,
   updates: Partial<StemSessionMeta>
@@ -497,7 +639,7 @@ export async function updateCloudStemMeta(
 
     // Re-upload the small meta.json inside the session folder
     if (session.driveFolderId) {
-      const metaPayload = {
+      const metaPayload: any = {
         id: updatedSession.id,
         fileName: updatedSession.fileName,
         youtubeVideoId: updatedSession.youtubeVideoId,
@@ -508,6 +650,7 @@ export async function updateCloudStemMeta(
         model: updatedSession.model,
         presets: updatedSession.presets,
       }
+      if (updatedSession.lyricTrack) metaPayload.lyricTrack = updatedSession.lyricTrack
       await drive.uploadFile(
         token,
         'meta.json',

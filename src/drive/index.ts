@@ -6,6 +6,8 @@ export {
   deleteCloudSession,
   isSessionInCloud,
   updateCloudStemMeta,
+  loadLyricTrackFromCloud,
+  createColabNotebookForSession,
   // Video state sync (cross-device recent videos + loop settings)
   fetchCloudVideoStates,
   uploadVideoStates,

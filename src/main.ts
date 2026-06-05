@@ -3072,6 +3072,7 @@ class WebLooper {
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
             <span id="stem-sync-drive-label">Sync to Drive</span>
           </button>
+
           <button id="exit-stem-real"
                   class="text-sm flex items-center gap-2 px-4 py-2 rounded-2xl bg-zinc-900 hover:bg-zinc-800 border border-white/10 active:bg-zinc-950 transition">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
@@ -3085,6 +3086,9 @@ class WebLooper {
         <div>
           <!-- Stem Mixer -->
           <div id="real-mixer-container" class="mb-4"></div>
+
+          <!-- Lyrics + Chords Panel (real implementation starting point) -->
+          <div id="real-lyrics-panel" class="mb-4"></div>
 
           <!-- Timeline with draggable loop handles -->
           <div id="stem-timeline-real" class="timeline w-full"></div>
@@ -3560,6 +3564,334 @@ class WebLooper {
     const { createStemMixerUI } = await import('./stems')
     createStemMixerUI({ container: mixerC, player: stemPlayer })
 
+    // ---------- Real Lyrics + Chords Panel (Phase 0 integration) ----------
+    const lyricsContainer = document.getElementById('real-lyrics-panel')!
+    const { LyricPanel } = await import('./lyrics')
+
+    let lyricPanel: InstanceType<typeof LyricPanel> | null = null
+
+    // Simple styled dialog helpers matching the app's dark zinc theme
+    function createDialogOverlay() {
+      const overlay = document.createElement('div')
+      overlay.className = 'fixed inset-0 bg-black/70 backdrop-blur z-[400] flex items-center justify-center p-6'
+      return overlay
+    }
+
+    function showInfoDialog(title: string, htmlContent: string): Promise<void> {
+      return new Promise((resolve) => {
+        const overlay = createDialogOverlay()
+        overlay.innerHTML = `
+          <div class="bg-zinc-900 border border-white/10 rounded-3xl p-6 max-w-md w-full">
+            <div class="text-lg font-semibold text-emerald-400 mb-3">${title}</div>
+            <div class="text-sm text-zinc-300 leading-relaxed whitespace-pre-wrap">${htmlContent}</div>
+            <div class="mt-5 flex justify-end">
+              <button class="px-4 py-2 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium">OK</button>
+            </div>
+          </div>
+        `
+        const btn = overlay.querySelector('button')!
+        const close = () => { overlay.remove(); resolve() }
+        btn.onclick = close
+        overlay.onclick = (e) => { if (e.target === overlay) close() }
+        document.body.appendChild(overlay)
+      })
+    }
+
+    const loadColabResults = async () => {
+      if (!lyricPanel || !sessionMeta?.id) return;
+      try {
+        const { loadLyricTrackFromCloud } = await import('./drive/sync');
+        const track = await loadLyricTrackFromCloud(sessionMeta.id);
+        if (track) {
+          const { updateStemSessionLyricTrack } = await import('./stems');
+          updateStemSessionLyricTrack(sessionMeta.id, track);
+          const { isSignedIn, isSessionInCloud, updateCloudStemMeta } = await import('./drive');
+          if (isSignedIn() && sessionMeta.id && isSessionInCloud(sessionMeta.id)) {
+            updateCloudStemMeta(sessionMeta.id, { lyricTrack: track }).catch(() => {});
+          }
+          lyricPanel.setTrack(track);
+          await showInfoDialog('Loaded from Colab', 'Lyrics with timing have been loaded from your Drive (Colab results).');
+        } else {
+          await showInfoDialog('No results yet', 'No lyricTrack.json found in the Drive folder yet. Finish running the notebook and try again.');
+        }
+      } catch (e) {
+        console.error(e);
+        await showInfoDialog('Error', 'Failed to load Colab results from Drive.');
+      }
+    };
+
+    lyricPanel = new LyricPanel({
+      container: lyricsContainer,
+      onLoadColabResults: loadColabResults,
+
+      onColabRequest: async () => {
+        if (!lyricPanel) return
+
+        const vocalsStem = realStems.find(s => s.name.toLowerCase().includes('vocal'))
+        if (!vocalsStem) {
+          await showInfoDialog('No vocals stem', 'Please separate stems first.')
+          return
+        }
+
+        let folderId = ''
+        try {
+          const { fetchCloudSessions } = await import('./drive/sync')
+          const cloudSessions = await fetchCloudSessions()
+          const cloudSess = cloudSessions.find((s: any) => s.id === sessionMeta?.id)
+          if (cloudSess?.driveFolderId) folderId = cloudSess.driveFolderId
+        } catch {}
+
+        if (!folderId) {
+          // Try a best-effort background upload so the folder (and vocals.webm) exist for Colab.
+          // This is the common case right after separation.
+          try {
+            const { isSignedIn, uploadStemSession } = await import('./drive')
+            if (isSignedIn() && sessionMeta?.id) {
+              // Build a minimal meta from what we have in scope
+              const meta = {
+                id: sessionMeta.id,
+                fileName: sessionMeta.fileName || 'Stem Session',
+                duration: sessionMeta.duration || vocalsStem.buffer.duration,
+                stemNames: realStems.map(s => s.name),
+                model: sessionMeta.model || 'demucs-rs htdemucs_6s',
+                createdAt: sessionMeta.createdAt || Date.now(),
+                youtubeVideoId: sessionMeta.youtubeVideoId,
+                youtubeVideoTitle: sessionMeta.youtubeVideoTitle,
+              }
+              await uploadStemSession(meta as any, realStems)
+              // Re-lookup
+              const { fetchCloudSessions: refetch } = await import('./drive/sync')
+              const fresh = await refetch()
+              const hit = fresh.find((s: any) => s.id === sessionMeta?.id)
+              if (hit?.driveFolderId) folderId = hit.driveFolderId
+            }
+          } catch (e) {
+            console.warn('[Colab] Could not auto-upload session for folderId:', e)
+          }
+        }
+
+        if (!folderId) {
+          await showInfoDialog(
+            'Drive folder needed',
+            'This stem session has not been synced to Google Drive yet.\n\n' +
+            'Click the "Synced" / Drive button in the header to upload, then try "Run in my Colab" again.\n\n' +
+            'Colab needs the vocals file in your Drive to process it.'
+          )
+          return
+        }
+
+        // --- AUTO: create the pre-filled notebook in the user's Drive session folder ---
+        const panel = lyricPanel
+        panel.setGenerating(true, 'Preparing Colab notebook (uploading ready .ipynb to your Drive)...')
+
+        let colabFileId = ''
+        let colabUrl = ''
+        try {
+          const { createColabNotebookForSession } = await import('./drive/sync')
+          colabFileId = await createColabNotebookForSession(sessionMeta!.id, folderId)
+          colabUrl = `https://colab.research.google.com/drive/${colabFileId}`
+        } catch (err: any) {
+          panel.setGenerating(false)
+          console.error('[Colab] Notebook auto-upload failed:', err)
+          await showInfoDialog('Colab prep failed', 'Could not create the notebook in Drive.\n\n' + (err?.message || err))
+          return
+        }
+
+        panel.setGenerating(false)
+
+        // Best-effort: copy the folder ID (useful as a fallback if user wants to look at the folder)
+        try { await navigator.clipboard.writeText(folderId) } catch {}
+
+        // Show a compact, styled "ready" dialog (no more long manual steps)
+        const overlay = document.createElement('div')
+        overlay.className = 'fixed inset-0 bg-black/70 backdrop-blur z-[400] flex items-center justify-center p-6'
+        overlay.innerHTML = `
+          <div class="bg-zinc-900 border border-white/10 rounded-3xl p-6 max-w-lg w-full">
+            <div class="text-lg font-semibold text-blue-400 mb-3">Colab notebook ready</div>
+            <div class="text-sm text-zinc-300 space-y-2">
+              <div>A ready-to-run notebook has been uploaded to your Drive session folder with <code>SESSION_FOLDER_ID</code> already filled in.</div>
+              <div class="font-mono text-[11px] bg-zinc-950 p-1.5 rounded break-all text-emerald-400">${folderId}</div>
+              <div class="text-xs text-zinc-400">It is now open in a new tab. In Colab: Runtime → GPU (T4) → Run all. Then come back and load the results.</div>
+            </div>
+            <div class="mt-5 flex flex-wrap gap-3">
+              <button id="open-colab-btn" class="px-4 py-2 rounded-2xl bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium">Open in Colab</button>
+              <button id="copy-id-btn" class="px-4 py-2 rounded-2xl border border-white/20 hover:bg-white/5 text-sm">Copy Folder ID</button>
+              <button id="load-now-btn" class="px-4 py-2 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white text-sm ml-auto">I've run it — Load results</button>
+            </div>
+            <div class="mt-4 text-right">
+              <button id="close-colab-modal" class="text-xs text-zinc-400 hover:text-white">Close</button>
+            </div>
+          </div>
+        `
+        document.body.appendChild(overlay)
+
+        const close = () => overlay.remove()
+        overlay.querySelector('#close-colab-modal')!.addEventListener('click', close)
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) close() })
+
+        overlay.querySelector('#open-colab-btn')!.addEventListener('click', () => {
+          if (colabUrl) window.open(colabUrl, '_blank')
+        })
+        overlay.querySelector('#copy-id-btn')!.addEventListener('click', async () => {
+          try { await navigator.clipboard.writeText(folderId); await showInfoDialog('Copied', 'Folder ID copied.'); }
+          catch { await showInfoDialog('Folder ID', folderId); }
+        })
+        overlay.querySelector('#load-now-btn')!.addEventListener('click', () => {
+          close()
+          loadColabResults()
+        })
+
+        // Make it "having the colab ready" — auto-open the tab for the user
+        if (colabUrl) {
+          // Small delay so the dialog is visible first (feels intentional)
+          setTimeout(() => { try { window.open(colabUrl, '_blank') } catch {} }, 250)
+        }
+      },
+      onProvideLyricsRequest: async () => {
+        if (!lyricPanel) return
+
+        const vocalsStem = realStems.find(s => s.name.toLowerCase().includes('vocal'))
+        if (!vocalsStem) {
+          await showInfoDialog('No vocals stem', 'Please separate stems first.')
+          return
+        }
+
+        // Check if we already have a LyricTrack with timing (from Colab or prior generation).
+        // If so, we only replace the TEXT in each segment — preserving the timing structure.
+        const existingTrack = lyricPanel.getTrack()
+
+        if (existingTrack && existingTrack.segments.length > 0) {
+          // --- TEXT-ONLY CORRECTION MODE ---
+          const segCount = existingTrack.segments.length
+          const currentLines = existingTrack.segments.map(s => s.text).join('\n')
+
+          const lyricsText = prompt(
+            `Your current track has ${segCount} timed segments. ` +
+            `Paste corrected lyrics below — the timing will be preserved, only text is updated.\n\n` +
+            `If your lyrics have fewer lines (e.g. chorus not repeated), matching lines will be applied to all similar segments.\n\n` +
+            `Current lyrics:\n${currentLines}`
+          )
+
+          if (!lyricsText || lyricsText.trim().length === 0) return
+
+          // Split user input into lines (filter empty)
+          const userLines = lyricsText.split('\n').map(l => l.trim()).filter(l => l.length > 0)
+
+          // Build updated segments by matching user lines to existing segments.
+          // If line counts match exactly: 1-to-1 replacement.
+          // If user has fewer lines (chorus not duplicated): use similarity matching
+          // so repeated sections get the same corrected text.
+          const updatedSegments = [...existingTrack.segments]
+
+          if (userLines.length === segCount) {
+            // Exact match — simple 1:1 replacement
+            for (let i = 0; i < segCount; i++) {
+              updatedSegments[i] = { ...updatedSegments[i], text: userLines[i], source: 'user' }
+            }
+          } else {
+            // Mismatch — use similarity to map user lines to segments.
+            // This handles the common case where the user doesn't repeat the chorus.
+            const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim()
+
+            const similarity = (a: string, b: string): number => {
+              const na = normalize(a)
+              const nb = normalize(b)
+              if (na === nb) return 1.0
+              if (!na || !nb) return 0
+
+              // Trigram-based similarity
+              const trigrams = (s: string): Set<string> => {
+                const t = new Set<string>()
+                for (let i = 0; i <= s.length - 3; i++) t.add(s.slice(i, i + 3))
+                return t
+              }
+              const ta = trigrams(na)
+              const tb = trigrams(nb)
+              if (ta.size === 0 || tb.size === 0) return 0
+              let intersection = 0
+              for (const t of ta) { if (tb.has(t)) intersection++ }
+              return (2 * intersection) / (ta.size + tb.size)
+            }
+
+            // For each existing segment, find the best matching user line
+            for (let i = 0; i < segCount; i++) {
+              const existingText = updatedSegments[i].text
+              let bestScore = 0
+              let bestLine = existingText // default: keep original if no good match
+
+              for (const userLine of userLines) {
+                const score = similarity(existingText, userLine)
+                if (score > bestScore) {
+                  bestScore = score
+                  bestLine = userLine
+                }
+              }
+
+              // Only replace if similarity is reasonable (>0.3) — otherwise keep original
+              if (bestScore > 0.3) {
+                updatedSegments[i] = { ...updatedSegments[i], text: bestLine, source: 'user' }
+              }
+            }
+          }
+
+          const updatedTrack: typeof existingTrack = {
+            ...existingTrack,
+            segments: updatedSegments,
+            lastEditedAt: Date.now(),
+          }
+
+          // Persist
+          if (sessionMeta?.id) {
+            const { updateStemSessionLyricTrack } = await import('./stems')
+            updateStemSessionLyricTrack(sessionMeta.id, updatedTrack)
+
+            import('./drive').then(({ isSignedIn, isSessionInCloud, updateCloudStemMeta }) => {
+              if (isSignedIn() && sessionMeta.id && isSessionInCloud(sessionMeta.id)) {
+                updateCloudStemMeta(sessionMeta.id, { lyricTrack: updatedTrack }).catch(() => {})
+              }
+            }).catch(() => {})
+          }
+
+          lyricPanel.setTrack(updatedTrack)
+          return
+        }
+
+        // --- NO EXISTING TRACK: Cannot correct lyrics without timing data ---
+        await showInfoDialog(
+          'No timed lyrics to correct',
+          'To use your own lyrics, first generate a timed track using "Run in my Colab" (free GPU). ' +
+          'The Colab notebook creates the timing structure, then you can correct the text here.\n\n' +
+          'Click "Run in my Colab" to get started.'
+        )
+      },
+      onEditRequest: () => {
+        console.log('[Lyrics] Edit requested (not implemented yet)')
+      }
+    })
+
+    // If a lyric track already exists for this session, load it
+    if (sessionMeta?.lyricTrack) {
+      lyricPanel.setTrack(sessionMeta.lyricTrack)
+    } else if (sessionMeta?.id) {
+      // Auto-load Colab results (lyricTrack.json sidecar) if present in Drive.
+      // This makes previously-processed sessions "just work" on re-open without clicking Load.
+      import('./drive').then(async ({ isSignedIn, isSessionInCloud }) => {
+        if (isSignedIn() && isSessionInCloud(sessionMeta.id)) {
+          try {
+            const { loadLyricTrackFromCloud } = await import('./drive/sync')
+            const track = await loadLyricTrackFromCloud(sessionMeta.id)
+            if (track && lyricPanel) {
+              const { updateStemSessionLyricTrack } = await import('./stems')
+              updateStemSessionLyricTrack(sessionMeta.id, track)
+              lyricPanel.setTrack(track)
+            }
+          } catch (e) {
+            console.warn('[Lyrics] Auto-load from Colab/Drive failed (non-fatal):', e)
+          }
+        }
+      }).catch(() => {})
+    }
+
     // ---------- StemPlayer events ----------
     const unsub = stemPlayer.on((ev) => {
       if (ev.type === 'time') {
@@ -3567,6 +3899,9 @@ class WebLooper {
         ;(window as any).__currentStemTime = t
         timeEl.textContent = formatTime(t, true)
         currentTimeDisplay.textContent = formatTime(t, true)
+
+        // Feed time to the real lyrics panel
+        lyricPanel?.setCurrentTime(t)
 
         const ph = document.getElementById('real-playhead') as HTMLElement
         if (ph) ph.style.left = `${(t / decoded.duration) * 100}%`

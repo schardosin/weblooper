@@ -553,8 +553,8 @@ export async function createColabNotebookForSession(
 
   const token = await getValidToken()
 
-  // Fetch the served template (works in dev and prod because of public/notebooks/)
-  const res = await fetch('/notebooks/colab_lyrics_processor.ipynb')
+  // Fetch the served template (BASE_URL handles /weblooper/ prefix on GitHub Pages)
+  const res = await fetch(`${import.meta.env.BASE_URL}notebooks/colab_lyrics_processor.ipynb`)
   if (!res.ok) {
     throw new Error(`Failed to load notebook template (status ${res.status}). Is the app serving /notebooks/?`)
   }

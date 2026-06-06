@@ -554,7 +554,7 @@ export async function createColabNotebookForSession(
   const token = await getValidToken()
 
   // Fetch the served template (BASE_URL handles /weblooper/ prefix on GitHub Pages)
-  const res = await fetch(`${import.meta.env.BASE_URL}notebooks/colab_lyrics_processor.ipynb`)
+  const res = await fetch(`${import.meta.env.BASE_URL}notebooks/colab_lyrics_processor.ipynb?v=${Date.now()}`)
   if (!res.ok) {
     throw new Error(`Failed to load notebook template (status ${res.status}). Is the app serving /notebooks/?`)
   }
@@ -923,8 +923,8 @@ export async function createStemColabNotebook(
 
   const token = await getValidToken()
 
-  // Fetch the served template
-  const res = await fetch(`${import.meta.env.BASE_URL}notebooks/colab_stem_separator.ipynb`)
+  // Fetch the served template (cache-bust to ensure latest version)
+  const res = await fetch(`${import.meta.env.BASE_URL}notebooks/colab_stem_separator.ipynb?v=${Date.now()}`)
   if (!res.ok) {
     throw new Error(`Failed to load stem notebook template (status ${res.status}).`)
   }

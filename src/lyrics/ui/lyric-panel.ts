@@ -29,6 +29,7 @@ export class LyricPanel {
   private onEditRequest?: () => void
 
   private segmentsEl: HTMLElement | null = null
+  private activeSegmentIndex = -1
 
   /** Internal state for live progress updates during generation */
   private isGenerating = false
@@ -266,6 +267,14 @@ export class LyricPanel {
       el.classList.toggle('bg-emerald-500/10', isActive)
       el.classList.toggle('border-emerald-500/40', isActive)
       el.classList.toggle('border-white/5', !isActive)
+
+      // Auto-scroll: smoothly scroll the lyrics container (not the page) to center the active segment
+      if (isActive && index !== this.activeSegmentIndex) {
+        this.activeSegmentIndex = index
+        const container = this.segmentsEl!
+        const targetTop = el.offsetTop - container.offsetTop - container.clientHeight / 2 + el.clientHeight / 2
+        container.scrollTo({ top: targetTop, behavior: 'smooth' })
+      }
     })
   }
 }

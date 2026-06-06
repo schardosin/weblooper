@@ -2331,8 +2331,9 @@ class WebLooper {
         closeModal()
 
         // Save to OPFS + enter stem player (reuse existing infra)
+        // Preserve the original colab session ID so it matches the manifest entry
         const { saveStemSession } = await import('./stems')
-        const savedId = await saveStemSession(
+        await saveStemSession(
           {
             youtubeVideoId: videoId,
             youtubeVideoTitle: ytTitle,
@@ -2342,14 +2343,21 @@ class WebLooper {
             model: 'colab-htdemucs_6s',
           },
           stems,
+          sessionId,  // preserve the colab session ID
         )
+
+        // Update the manifest entry with stemNames (it was already added in createStemColabSession)
+        try {
+          const { updateCloudStemMeta } = await import('./drive')
+          await updateCloudStemMeta(sessionId, { stemNames: stems.map(s => s.name) })
+        } catch {}
 
         // Enter stem player
         this.enterStemPracticeWithRealStems(
           { fileName: `YouTube — ${ytTitle}`, duration: videoDuration || stems[0].buffer.duration },
           stems,
           {
-            id: savedId,
+            id: sessionId,
             fileName: `YouTube — ${ytTitle}`,
             duration: videoDuration || stems[0].buffer.duration,
             stemNames: stems.map(s => s.name),
@@ -2358,22 +2366,6 @@ class WebLooper {
             youtubeVideoId: videoId,
             youtubeVideoTitle: ytTitle,
           },
-        )
-
-        // Background upload to Drive (already have the stems in the folder from Colab,
-        // but the manifest entry needs updating with the proper savedId)
-        this.backgroundUploadToCloud(
-          {
-            id: savedId,
-            youtubeVideoId: videoId,
-            youtubeVideoTitle: ytTitle,
-            fileName: `YouTube — ${ytTitle}`,
-            duration: videoDuration || stems[0].buffer.duration,
-            stemNames: stems.map(s => s.name),
-            model: 'colab-htdemucs_6s',
-            createdAt: Date.now(),
-          },
-          stems,
         )
 
       } catch (err) {

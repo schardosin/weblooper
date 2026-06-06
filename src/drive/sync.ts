@@ -875,18 +875,29 @@ export async function createStemColabSession(
   const folderId = await drive.createFolder(token, sessionId)
 
   // Upload meta.json with YouTube info + status: 'processing'
+  const stemNames = ['drums', 'bass', 'guitar', 'piano', 'vocals', 'other']
+
   const meta = {
     id: sessionId,
     youtubeVideoId,
     youtubeVideoTitle,
     youtubeUrl: `https://www.youtube.com/watch?v=${youtubeVideoId}`,
     duration,
-    stemNames: [] as string[],
+    stemNames,
     model: 'colab-htdemucs_6s',
     status: 'processing',
     createdAt: Date.now(),
   }
   await drive.uploadFile(token, 'meta.json', JSON.stringify(meta, null, 2), 'application/json', folderId)
+
+  // Pre-create placeholder .webm files so weblooper retains ownership.
+  // Colab will overwrite these with real stem audio via files().update().
+  // Under drive.file scope, weblooper can only read files IT created —
+  // so these placeholders ensure the stems remain accessible after Colab fills them.
+  const placeholder = new ArrayBuffer(0)
+  for (const stem of stemNames) {
+    await drive.uploadFile(token, `${stem}.webm`, placeholder, 'audio/webm', folderId)
+  }
 
   // Add to manifest so weblooper knows about this session
   if (!manifestCache) {
@@ -897,7 +908,7 @@ export async function createStemColabSession(
     youtubeVideoId,
     youtubeVideoTitle,
     duration,
-    stemNames: [],
+    stemNames,
     model: 'colab-htdemucs_6s',
     createdAt: Date.now(),
     driveFolderId: folderId,

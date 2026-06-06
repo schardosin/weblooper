@@ -1028,6 +1028,8 @@ class WebLooper {
         try {
           await this.startColabStemSeparation(videoId)
         } catch (err: any) {
+          // Clean up choice dialog if still visible
+          document.querySelectorAll('#stem-choice-buttons')?.forEach(el => el.closest('.fixed')?.remove())
           console.error('[weblooper] Colab stem separation failed', err)
           alert(`Colab stem separation failed:\n\n${err?.message || err}`)
         }
@@ -2186,14 +2188,14 @@ class WebLooper {
         <div class="bg-zinc-900 border border-white/10 rounded-3xl p-6 max-w-md w-full">
           <div class="text-lg font-semibold text-emerald-400 mb-3">Separate Stems</div>
           <div class="text-sm text-zinc-400 mb-5">Choose how to split this track into stems (drums, bass, guitar, piano, vocals, other):</div>
-          <div class="space-y-3">
+          <div id="stem-choice-buttons" class="space-y-3">
+            <button id="stem-choice-colab" class="w-full text-left px-4 py-3 rounded-2xl border border-blue-500/30 bg-blue-500/5 hover:border-blue-500/50 hover:bg-blue-500/10 transition-colors">
+              <div class="text-sm font-medium text-white flex items-center gap-2">In Google Colab (free GPU) <span class="text-[9px] px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-300 border border-blue-500/30 uppercase tracking-wide">Recommended</span></div>
+              <div class="text-xs text-zinc-400 mt-0.5">Opens a notebook on a free T4 GPU. ~2-4 min. No tab capture needed. Requires Google sign-in.</div>
+            </button>
             <button id="stem-choice-browser" class="w-full text-left px-4 py-3 rounded-2xl border border-white/10 hover:border-emerald-500/50 hover:bg-emerald-500/5 transition-colors">
               <div class="text-sm font-medium text-white">In Browser (WebGPU)</div>
               <div class="text-xs text-zinc-400 mt-0.5">Uses your GPU via WebAssembly. ~3-5 min. Requires tab audio capture.</div>
-            </button>
-            <button id="stem-choice-colab" class="w-full text-left px-4 py-3 rounded-2xl border border-white/10 hover:border-blue-500/50 hover:bg-blue-500/5 transition-colors">
-              <div class="text-sm font-medium text-white">In Google Colab (free GPU)</div>
-              <div class="text-xs text-zinc-400 mt-0.5">Opens a notebook on a free T4 GPU. ~2-4 min. No tab capture needed. Requires Google sign-in.</div>
             </button>
           </div>
           <div class="mt-4 text-right">
@@ -2208,7 +2210,21 @@ class WebLooper {
       }
 
       overlay.querySelector('#stem-choice-browser')!.addEventListener('click', () => close('browser'))
-      overlay.querySelector('#stem-choice-colab')!.addEventListener('click', () => close('colab'))
+      overlay.querySelector('#stem-choice-colab')!.addEventListener('click', () => {
+        // Show loading state immediately so user sees feedback
+        const buttonsEl = overlay.querySelector('#stem-choice-buttons')!
+        buttonsEl.innerHTML = `
+          <div class="flex items-center gap-3 py-4 px-2">
+            <div class="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin"></div>
+            <span class="text-sm text-zinc-300">Preparing Colab session (creating Drive folder + notebook)...</span>
+          </div>
+        `
+        // Hide cancel button during prep
+        const cancelBtn = overlay.querySelector('#stem-choice-cancel') as HTMLElement
+        if (cancelBtn) cancelBtn.style.display = 'none'
+        // Resolve but keep overlay visible — startColabStemSeparation will remove it
+        resolve('colab')
+      })
       overlay.querySelector('#stem-choice-cancel')!.addEventListener('click', () => close(null))
       overlay.addEventListener('click', (e) => { if (e.target === overlay) close(null) })
 
@@ -2244,6 +2260,9 @@ class WebLooper {
 
     // Open Colab in a new tab
     const colabStartedAt = new Date().toISOString()
+
+    // Remove the choice dialog (it was kept open to show the loading spinner)
+    document.querySelectorAll('#stem-choice-buttons')?.forEach(el => el.closest('.fixed')?.remove())
 
     // Show a progress/waiting modal
     const overlay = document.createElement('div')

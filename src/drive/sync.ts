@@ -637,7 +637,7 @@ export async function updateCloudStemMeta(
 
     manifestCache.sessions[sessionIndex] = updatedSession
 
-    // Re-upload the small meta.json inside the session folder
+    // Update the small meta.json inside the session folder (find existing to avoid duplicates)
     if (session.driveFolderId) {
       const metaPayload: any = {
         id: updatedSession.id,
@@ -651,13 +651,13 @@ export async function updateCloudStemMeta(
         presets: updatedSession.presets,
       }
       if (updatedSession.lyricTrack) metaPayload.lyricTrack = updatedSession.lyricTrack
-      await drive.uploadFile(
-        token,
-        'meta.json',
-        JSON.stringify(metaPayload, null, 2),
-        'application/json',
-        session.driveFolderId
-      )
+      const metaJson = JSON.stringify(metaPayload, null, 2)
+      const existingMeta = await drive.findFileByName(token, 'meta.json', session.driveFolderId)
+      if (existingMeta?.id) {
+        await drive.updateFile(token, existingMeta.id, metaJson, 'application/json')
+      } else {
+        await drive.uploadFile(token, 'meta.json', metaJson, 'application/json', session.driveFolderId)
+      }
     }
 
     // Save updated manifest

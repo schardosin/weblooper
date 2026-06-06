@@ -3702,24 +3702,71 @@ class WebLooper {
         // Best-effort: copy the folder ID (useful as a fallback if user wants to look at the folder)
         try { await navigator.clipboard.writeText(folderId) } catch {}
 
+        // --- Start polling Drive for Colab results ---
+        let pollingInterval: ReturnType<typeof setInterval> | null = null
+        let pollingTimeout: ReturnType<typeof setTimeout> | null = null
+        const POLL_INTERVAL_MS = 15_000  // check every 15 seconds
+        const POLL_MAX_MS = 10 * 60_000  // stop after 10 minutes
+
+        const stopPolling = () => {
+          if (pollingInterval) { clearInterval(pollingInterval); pollingInterval = null }
+          if (pollingTimeout) { clearTimeout(pollingTimeout); pollingTimeout = null }
+          panel.setGenerating(false)
+        }
+
+        const pollForResults = async () => {
+          try {
+            const { loadLyricTrackFromCloud } = await import('./drive/sync')
+            const track = await loadLyricTrackFromCloud(sessionMeta!.id)
+            if (track) {
+              // Found results! Stop polling and load them
+              stopPolling()
+              const { updateStemSessionLyricTrack } = await import('./stems')
+              updateStemSessionLyricTrack(sessionMeta!.id, track)
+              const { isSignedIn, isSessionInCloud, updateCloudStemMeta } = await import('./drive')
+              if (isSignedIn() && sessionMeta!.id && isSessionInCloud(sessionMeta!.id)) {
+                updateCloudStemMeta(sessionMeta!.id, { lyricTrack: track }).catch(() => {})
+              }
+              lyricPanel!.setTrack(track)
+              // Close the modal if still open
+              const modal = document.querySelector('[data-colab-modal]')
+              if (modal) modal.remove()
+              await showInfoDialog('Lyrics ready!', 'Colab finished processing. Lyrics with timing have been loaded automatically.')
+            }
+          } catch (e) {
+            // Polling errors are silent — we'll try again next interval
+            console.debug('[Colab poll] Error checking for results:', e)
+          }
+        }
+
+        // Start the polling loop
+        pollingInterval = setInterval(pollForResults, POLL_INTERVAL_MS)
+        // Auto-stop after 10 minutes
+        pollingTimeout = setTimeout(stopPolling, POLL_MAX_MS)
+
         // Show a compact, styled "ready" dialog (no more long manual steps)
         const overlay = document.createElement('div')
         overlay.className = 'fixed inset-0 bg-black/70 backdrop-blur z-[400] flex items-center justify-center p-6'
+        overlay.setAttribute('data-colab-modal', 'true')
         overlay.innerHTML = `
           <div class="bg-zinc-900 border border-white/10 rounded-3xl p-6 max-w-lg w-full">
             <div class="text-lg font-semibold text-blue-400 mb-3">Colab notebook ready</div>
             <div class="text-sm text-zinc-300 space-y-2">
               <div>A ready-to-run notebook has been uploaded to your Drive session folder with <code>SESSION_FOLDER_ID</code> already filled in.</div>
               <div class="font-mono text-[11px] bg-zinc-950 p-1.5 rounded break-all text-emerald-400">${folderId}</div>
-              <div class="text-xs text-zinc-400">It is now open in a new tab. In Colab: Runtime → GPU (T4) → Run all. Then come back and load the results.</div>
+              <div class="text-xs text-zinc-400">It is now open in a new tab. In Colab: Runtime &rarr; GPU (T4) &rarr; Run all.</div>
+              <div class="flex items-center gap-2 mt-2 text-xs text-emerald-400">
+                <div class="w-2 h-2 bg-emerald-400 rounded-full animate-pulse"></div>
+                <span>Watching Drive for results (auto-loads when Colab finishes)</span>
+              </div>
             </div>
             <div class="mt-5 flex flex-wrap gap-3">
               <button id="open-colab-btn" class="px-4 py-2 rounded-2xl bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium">Open in Colab</button>
               <button id="copy-id-btn" class="px-4 py-2 rounded-2xl border border-white/20 hover:bg-white/5 text-sm">Copy Folder ID</button>
-              <button id="load-now-btn" class="px-4 py-2 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white text-sm ml-auto">I've run it — Load results</button>
+              <button id="load-now-btn" class="px-4 py-2 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white text-sm ml-auto">Load now</button>
             </div>
             <div class="mt-4 text-right">
-              <button id="close-colab-modal" class="text-xs text-zinc-400 hover:text-white">Close</button>
+              <button id="close-colab-modal" class="text-xs text-zinc-400 hover:text-white">Close (keeps watching)</button>
             </div>
           </div>
         `
@@ -3738,6 +3785,7 @@ class WebLooper {
         })
         overlay.querySelector('#load-now-btn')!.addEventListener('click', () => {
           close()
+          stopPolling()
           loadColabResults()
         })
 
@@ -3746,6 +3794,9 @@ class WebLooper {
           // Small delay so the dialog is visible first (feels intentional)
           setTimeout(() => { try { window.open(colabUrl, '_blank') } catch {} }, 250)
         }
+
+        // Show a waiting state in the lyric panel (behind the modal)
+        panel.setGenerating(true, 'Waiting for Colab results (auto-loads when ready)...')
       },
       onProvideLyricsRequest: async () => {
         if (!lyricPanel) return

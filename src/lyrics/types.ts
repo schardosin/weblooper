@@ -68,6 +68,10 @@ export interface LyricTrack {
     processingTimeMs?: number
     /** Which quantized / model variant was used */
     modelVariant?: string
+    /** ISO timestamp from Colab when processing finished (used to detect stale results) */
+    processedAt?: string
+    /** Source of the lyrics text (e.g. "lyrics.ovh (Artist - Title)") */
+    lyricsSource?: string
   }
 
   /** When the user last edited this track */

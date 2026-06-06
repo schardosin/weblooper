@@ -3707,6 +3707,7 @@ class WebLooper {
         let pollingTimeout: ReturnType<typeof setTimeout> | null = null
         const POLL_INTERVAL_MS = 15_000  // check every 15 seconds
         const POLL_MAX_MS = 10 * 60_000  // stop after 10 minutes
+        const colabStartedAt = new Date().toISOString()  // used to reject stale results
 
         const stopPolling = () => {
           if (pollingInterval) { clearInterval(pollingInterval); pollingInterval = null }
@@ -3719,7 +3720,19 @@ class WebLooper {
             const { loadLyricTrackFromCloud } = await import('./drive/sync')
             const track = await loadLyricTrackFromCloud(sessionMeta!.id)
             if (track) {
-              // Found results! Stop polling and load them
+              // Check if this is a fresh result (processedAt must be after we started polling)
+              const processedAt = track.metadata?.processedAt
+              if (processedAt && new Date(processedAt) < new Date(colabStartedAt)) {
+                // Stale result from a previous run — keep polling
+                console.debug('[Colab poll] Found stale result (processedAt:', processedAt, '< colabStartedAt:', colabStartedAt, '). Ignoring.')
+                return
+              }
+              if (!processedAt) {
+                // No processedAt — likely old format from before this fix. Still stale.
+                console.debug('[Colab poll] Found result without processedAt — likely stale. Ignoring.')
+                return
+              }
+              // Fresh result! Stop polling and load it
               stopPolling()
               const { updateStemSessionLyricTrack } = await import('./stems')
               updateStemSessionLyricTrack(sessionMeta!.id, track)

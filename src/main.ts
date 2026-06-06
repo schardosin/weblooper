@@ -993,27 +993,43 @@ class WebLooper {
         return
       }
 
-      try {
-        await this.startYouTubeStemSeparationForCurrentVideo(this.currentVideoId)
-      } catch (err: any) {
-        console.error('[weblooper] YouTube stem separation failed', err)
+      const videoId = this.currentVideoId
 
-        const message = err?.message || String(err)
+      // Show choice dialog: Browser vs Colab
+      const choice = await this.showStemMethodChoice()
+      if (!choice) return // user cancelled
 
-        // Give a nicer message for the common YouTube extraction failures
-        if (message.includes('unavailable') || message.includes('private') || message.includes('deleted')) {
-          alert(`This video's audio cannot be extracted:\n\n${message}`)
-        } else if (message.includes('403') || message.includes('blocked') || message.includes('failed with all') || message.includes('Failed to fetch')) {
-          alert(
-            'Direct YouTube audio extraction failed (YouTube often blocks this).\n\n' +
-            'Recommended reliable method:\n\n' +
-            '1. Download high-quality audio using yt-dlp:\n' +
-            '   yt-dlp -f bestaudio --extract-audio --audio-format opus "https://youtu.be/' + this.currentVideoId + '"\n\n' +
-            '2. Then use "Load local audio file (for stems)" with the downloaded file.\n\n' +
-            'This gives much better results than browser-based extraction.'
-          )
-        } else {
-          alert(`Failed to separate stems from YouTube:\n\n${message}`)
+      if (choice === 'browser') {
+        try {
+          await this.startYouTubeStemSeparationForCurrentVideo(videoId)
+        } catch (err: any) {
+          console.error('[weblooper] YouTube stem separation failed', err)
+
+          const message = err?.message || String(err)
+
+          // Give a nicer message for the common YouTube extraction failures
+          if (message.includes('unavailable') || message.includes('private') || message.includes('deleted')) {
+            alert(`This video's audio cannot be extracted:\n\n${message}`)
+          } else if (message.includes('403') || message.includes('blocked') || message.includes('failed with all') || message.includes('Failed to fetch')) {
+            alert(
+              'Direct YouTube audio extraction failed (YouTube often blocks this).\n\n' +
+              'Recommended reliable method:\n\n' +
+              '1. Download high-quality audio using yt-dlp:\n' +
+              '   yt-dlp -f bestaudio --extract-audio --audio-format opus "https://youtu.be/' + videoId + '"\n\n' +
+              '2. Then use "Load local audio file (for stems)" with the downloaded file.\n\n' +
+              'This gives much better results than browser-based extraction.'
+            )
+          } else {
+            alert(`Failed to separate stems from YouTube:\n\n${message}`)
+          }
+        }
+      } else {
+        // Colab path
+        try {
+          await this.startColabStemSeparation(videoId)
+        } catch (err: any) {
+          console.error('[weblooper] Colab stem separation failed', err)
+          alert(`Colab stem separation failed:\n\n${err?.message || err}`)
         }
       }
     })
@@ -2156,6 +2172,221 @@ class WebLooper {
     // Handles youtu.be, youtube.com/watch, youtube.com/embed, etc.
     const match = input.match(/(?:v=|\/)([0-9A-Za-z_-]{11})/) || input.match(/^([0-9A-Za-z_-]{11})$/);
     return match ? match[1] : null;
+  }
+
+  /**
+   * Show a choice dialog letting the user pick between browser-based and Colab-based
+   * stem separation. Returns 'browser' | 'colab' | null (cancelled).
+   */
+  private showStemMethodChoice(): Promise<'browser' | 'colab' | null> {
+    return new Promise((resolve) => {
+      const overlay = document.createElement('div')
+      overlay.className = 'fixed inset-0 bg-black/70 backdrop-blur z-[400] flex items-center justify-center p-6'
+      overlay.innerHTML = `
+        <div class="bg-zinc-900 border border-white/10 rounded-3xl p-6 max-w-md w-full">
+          <div class="text-lg font-semibold text-emerald-400 mb-3">Separate Stems</div>
+          <div class="text-sm text-zinc-400 mb-5">Choose how to split this track into stems (drums, bass, guitar, piano, vocals, other):</div>
+          <div class="space-y-3">
+            <button id="stem-choice-browser" class="w-full text-left px-4 py-3 rounded-2xl border border-white/10 hover:border-emerald-500/50 hover:bg-emerald-500/5 transition-colors">
+              <div class="text-sm font-medium text-white">In Browser (WebGPU)</div>
+              <div class="text-xs text-zinc-400 mt-0.5">Uses your GPU via WebAssembly. ~3-5 min. Requires tab audio capture.</div>
+            </button>
+            <button id="stem-choice-colab" class="w-full text-left px-4 py-3 rounded-2xl border border-white/10 hover:border-blue-500/50 hover:bg-blue-500/5 transition-colors">
+              <div class="text-sm font-medium text-white">In Google Colab (free GPU)</div>
+              <div class="text-xs text-zinc-400 mt-0.5">Opens a notebook on a free T4 GPU. ~2-4 min. No tab capture needed. Requires Google sign-in.</div>
+            </button>
+          </div>
+          <div class="mt-4 text-right">
+            <button id="stem-choice-cancel" class="text-xs text-zinc-400 hover:text-white">Cancel</button>
+          </div>
+        </div>
+      `
+
+      const close = (result: 'browser' | 'colab' | null) => {
+        overlay.remove()
+        resolve(result)
+      }
+
+      overlay.querySelector('#stem-choice-browser')!.addEventListener('click', () => close('browser'))
+      overlay.querySelector('#stem-choice-colab')!.addEventListener('click', () => close('colab'))
+      overlay.querySelector('#stem-choice-cancel')!.addEventListener('click', () => close(null))
+      overlay.addEventListener('click', (e) => { if (e.target === overlay) close(null) })
+
+      document.body.appendChild(overlay)
+    })
+  }
+
+  /**
+   * Start Colab-based stem separation for the current YouTube video.
+   * Creates a session in Drive, uploads the pre-configured notebook, opens Colab,
+   * then polls Drive for finished stems and auto-loads them.
+   */
+  private async startColabStemSeparation(videoId: string) {
+    const { isSignedIn, signIn } = await import('./drive')
+    if (!isSignedIn()) {
+      await signIn()
+      if (!isSignedIn()) {
+        throw new Error('Google sign-in is required for Colab stem separation.')
+      }
+    }
+
+    const ytTitle = (this.els.videoTitle?.textContent || '').trim() || `YouTube ${videoId}`
+    const videoDuration = this.duration || this.player?.getDuration?.() || 0
+    const sessionId = `colab-stems-${videoId}-${Date.now().toString(36)}`
+
+    // Create placeholder session folder in Drive
+    const { createStemColabSession, createStemColabNotebook, checkStemColabStatus, downloadStemFile } = await import('./drive/sync')
+    const folderId = await createStemColabSession(sessionId, videoId, ytTitle, videoDuration)
+
+    // Upload the pre-configured notebook
+    const notebookFileId = await createStemColabNotebook(sessionId, folderId, videoId)
+    const colabUrl = `https://colab.research.google.com/drive/${notebookFileId}`
+
+    // Open Colab in a new tab
+    const colabStartedAt = new Date().toISOString()
+
+    // Show a progress/waiting modal
+    const overlay = document.createElement('div')
+    overlay.className = 'fixed inset-0 bg-black/70 backdrop-blur z-[400] flex items-center justify-center p-6'
+    overlay.setAttribute('data-colab-stem-modal', 'true')
+    overlay.innerHTML = `
+      <div class="bg-zinc-900 border border-white/10 rounded-3xl p-6 max-w-lg w-full">
+        <div class="text-lg font-semibold text-blue-400 mb-3">Colab Stem Separation</div>
+        <div class="text-sm text-zinc-300 space-y-2">
+          <div>A ready-to-run notebook has been uploaded to your Drive.</div>
+          <div class="text-xs text-zinc-400">In Colab: Runtime &rarr; Change type &rarr; T4 GPU &rarr; Run all.</div>
+          <div class="text-xs text-zinc-500">Session: <span class="font-mono">${sessionId.slice(0, 20)}…</span></div>
+          <div class="flex items-center gap-2 mt-3 text-xs text-emerald-400">
+            <div class="w-2 h-2 bg-emerald-400 rounded-full animate-pulse"></div>
+            <span id="colab-stem-poll-status">Watching Drive for finished stems (auto-loads when Colab finishes)…</span>
+          </div>
+        </div>
+        <div class="mt-5 flex flex-wrap gap-3">
+          <button id="open-colab-stem-btn" class="px-4 py-2 rounded-2xl bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium">Open in Colab</button>
+          <button id="cancel-colab-stem-btn" class="px-4 py-2 rounded-2xl border border-white/20 hover:bg-white/5 text-sm text-zinc-300">Cancel</button>
+        </div>
+      </div>
+    `
+    document.body.appendChild(overlay)
+
+    // Wire buttons
+    overlay.querySelector('#open-colab-stem-btn')!.addEventListener('click', () => {
+      window.open(colabUrl, '_blank')
+    })
+
+    // Auto-open Colab
+    setTimeout(() => { try { window.open(colabUrl, '_blank') } catch {} }, 300)
+
+    // Polling state
+    let pollingInterval: ReturnType<typeof setInterval> | null = null
+    let pollingTimeout: ReturnType<typeof setTimeout> | null = null
+    const POLL_INTERVAL_MS = 15_000
+    const POLL_MAX_MS = 10 * 60_000
+
+    const stopPolling = () => {
+      if (pollingInterval) { clearInterval(pollingInterval); pollingInterval = null }
+      if (pollingTimeout) { clearTimeout(pollingTimeout); pollingTimeout = null }
+    }
+
+    const closeModal = () => {
+      stopPolling()
+      overlay.remove()
+    }
+
+    overlay.querySelector('#cancel-colab-stem-btn')!.addEventListener('click', closeModal)
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal() })
+
+    // Poll for results
+    const pollForStems = async () => {
+      try {
+        const result = await checkStemColabStatus(folderId, colabStartedAt)
+        if (!result) return
+
+        // Stems are ready! Download them all
+        stopPolling()
+        const pollStatusEl = overlay.querySelector('#colab-stem-poll-status')
+        if (pollStatusEl) pollStatusEl.textContent = 'Stems ready! Downloading…'
+
+        const stemNames = result.stemNames // e.g. ['drums', 'bass', 'guitar', 'piano', 'vocals', 'other']
+        const audioCtx = new AudioContext({ sampleRate: 44100 })
+        const stems: Array<{ name: string; buffer: AudioBuffer }> = []
+
+        for (const name of stemNames) {
+          const data = await downloadStemFile(folderId, name)
+          if (!data) {
+            console.warn(`[colab-stems] Could not download ${name}.webm`)
+            continue
+          }
+          const decoded = await audioCtx.decodeAudioData(data)
+          stems.push({ name, buffer: decoded })
+        }
+        audioCtx.close()
+
+        if (stems.length === 0) {
+          closeModal()
+          alert('Colab finished but no stem files could be downloaded.')
+          return
+        }
+
+        closeModal()
+
+        // Save to OPFS + enter stem player (reuse existing infra)
+        const { saveStemSession } = await import('./stems')
+        const savedId = await saveStemSession(
+          {
+            youtubeVideoId: videoId,
+            youtubeVideoTitle: ytTitle,
+            fileName: `YouTube — ${ytTitle}`,
+            duration: videoDuration || stems[0].buffer.duration,
+            stemNames: stems.map(s => s.name),
+            model: 'colab-htdemucs_6s',
+          },
+          stems,
+        )
+
+        // Enter stem player
+        this.enterStemPracticeWithRealStems(
+          { fileName: `YouTube — ${ytTitle}`, duration: videoDuration || stems[0].buffer.duration },
+          stems,
+          {
+            id: savedId,
+            fileName: `YouTube — ${ytTitle}`,
+            duration: videoDuration || stems[0].buffer.duration,
+            stemNames: stems.map(s => s.name),
+            model: 'colab-htdemucs_6s',
+            createdAt: Date.now(),
+            youtubeVideoId: videoId,
+            youtubeVideoTitle: ytTitle,
+          },
+        )
+
+        // Background upload to Drive (already have the stems in the folder from Colab,
+        // but the manifest entry needs updating with the proper savedId)
+        this.backgroundUploadToCloud(
+          {
+            id: savedId,
+            youtubeVideoId: videoId,
+            youtubeVideoTitle: ytTitle,
+            fileName: `YouTube — ${ytTitle}`,
+            duration: videoDuration || stems[0].buffer.duration,
+            stemNames: stems.map(s => s.name),
+            model: 'colab-htdemucs_6s',
+            createdAt: Date.now(),
+          },
+          stems,
+        )
+
+      } catch (err) {
+        console.debug('[colab-stems poll] Error:', err)
+      }
+    }
+
+    pollingInterval = setInterval(pollForStems, POLL_INTERVAL_MS)
+    pollingTimeout = setTimeout(() => {
+      stopPolling()
+      const pollStatusEl = overlay.querySelector('#colab-stem-poll-status')
+      if (pollStatusEl) pollStatusEl.textContent = 'Polling timed out (10 min). Check Colab manually and reload.'
+    }, POLL_MAX_MS)
   }
 
   /**

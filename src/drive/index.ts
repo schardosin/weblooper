@@ -8,6 +8,11 @@ export {
   updateCloudStemMeta,
   loadLyricTrackFromCloud,
   createColabNotebookForSession,
+  // Colab stem separation
+  createStemColabSession,
+  createStemColabNotebook,
+  checkStemColabStatus,
+  downloadStemFile,
   // Video state sync (cross-device recent videos + loop settings)
   fetchCloudVideoStates,
   uploadVideoStates,

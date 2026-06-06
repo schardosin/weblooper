@@ -849,3 +849,187 @@ export async function downloadPitchRawAudio(videoId: string): Promise<ArrayBuffe
     return null
   }
 }
+
+// =============================================================================
+// Colab Stem Separation
+// =============================================================================
+
+/**
+ * Create a placeholder session folder in Drive for Colab stem separation.
+ * Contains meta.json with the YouTube URL so the notebook knows what to download.
+ * Returns the Drive folder ID.
+ */
+export async function createStemColabSession(
+  sessionId: string,
+  youtubeVideoId: string,
+  youtubeVideoTitle: string,
+  duration: number,
+): Promise<string> {
+  if (!isSignedIn()) {
+    throw new Error('Please sign in to Google Drive first.')
+  }
+
+  const token = await getValidToken()
+
+  // Create a folder for this session
+  const folderId = await drive.createFolder(token, sessionId)
+
+  // Upload meta.json with YouTube info + status: 'processing'
+  const meta = {
+    id: sessionId,
+    youtubeVideoId,
+    youtubeVideoTitle,
+    youtubeUrl: `https://www.youtube.com/watch?v=${youtubeVideoId}`,
+    duration,
+    stemNames: [] as string[],
+    model: 'colab-htdemucs_6s',
+    status: 'processing',
+    createdAt: Date.now(),
+  }
+  await drive.uploadFile(token, 'meta.json', JSON.stringify(meta, null, 2), 'application/json', folderId)
+
+  // Add to manifest so weblooper knows about this session
+  if (!manifestCache) {
+    manifestCache = { version: 1, sessions: [] }
+  }
+  manifestCache.sessions.unshift({
+    id: sessionId,
+    youtubeVideoId,
+    youtubeVideoTitle,
+    duration,
+    stemNames: [],
+    model: 'colab-htdemucs_6s',
+    createdAt: Date.now(),
+    driveFolderId: folderId,
+  } as CloudSession)
+  await saveManifest(token)
+
+  console.log('[drive-sync] Created stem Colab session folder:', folderId)
+  return folderId
+}
+
+/**
+ * Upload the Colab stem separator notebook to the session folder, pre-configured
+ * with SESSION_FOLDER_ID and YOUTUBE_URL. Returns the Drive file ID.
+ */
+export async function createStemColabNotebook(
+  sessionId: string,
+  driveFolderId: string,
+  youtubeVideoId: string,
+): Promise<string> {
+  if (!isSignedIn()) {
+    throw new Error('Please sign in to Google Drive first.')
+  }
+
+  const token = await getValidToken()
+
+  // Fetch the served template
+  const res = await fetch(`${import.meta.env.BASE_URL}notebooks/colab_stem_separator.ipynb`)
+  if (!res.ok) {
+    throw new Error(`Failed to load stem notebook template (status ${res.status}).`)
+  }
+  const raw = await res.text()
+  const nb = JSON.parse(raw) as any
+
+  // Find and patch the configuration cell (Cell 4 with SESSION_FOLDER_ID and YOUTUBE_URL)
+  const youtubeUrl = `https://www.youtube.com/watch?v=${youtubeVideoId}`
+  let configCell = (nb.cells || []).find((c: any) =>
+    Array.isArray(c.source) &&
+    c.source.some((l: string) => l.includes('__WEBLOOPER_SESSION_FOLDER_ID__') || l.includes('__WEBLOOPER_YOUTUBE_URL__'))
+  )
+  if (!configCell) {
+    configCell = nb.cells && nb.cells[4]
+  }
+  if (configCell && Array.isArray(configCell.source)) {
+    configCell.source = configCell.source.map((line: string) => {
+      if (line.includes('__WEBLOOPER_SESSION_FOLDER_ID__') || (line.includes('SESSION_FOLDER_ID') && line.includes('='))) {
+        return `SESSION_FOLDER_ID = "${driveFolderId}"   # pre-filled by weblooper\n`
+      }
+      if (line.includes('__WEBLOOPER_YOUTUBE_URL__') || (line.includes('YOUTUBE_URL') && line.includes('='))) {
+        return `YOUTUBE_URL = "${youtubeUrl}"   # pre-filled by weblooper\n`
+      }
+      return line
+    })
+  }
+
+  // Set notebook metadata
+  if (!nb.metadata) nb.metadata = {}
+  if (!nb.metadata.colab) nb.metadata.colab = {}
+  nb.metadata.colab.provenance = nb.metadata.colab.provenance || []
+  nb.metadata.name = `weblooper-stems-${sessionId.slice(0, 8)}`
+
+  const notebookJson = JSON.stringify(nb)
+  const fileName = 'weblooper-stem-separator.ipynb'
+  const mimeType = 'application/vnd.google.colaboratory'
+
+  // Idempotent: reuse existing file
+  const existing = await drive.findFileByName(token, fileName, driveFolderId)
+  if (existing?.id) {
+    await drive.updateFile(token, existing.id, notebookJson, 'application/json')
+    console.log('[drive-sync] Refreshed stem Colab notebook:', existing.id)
+    return existing.id
+  }
+
+  const fileId = await drive.uploadFile(token, fileName, notebookJson, mimeType, driveFolderId)
+  console.log('[drive-sync] Created stem Colab notebook:', fileId)
+  return fileId
+}
+
+/**
+ * Check if the Colab stem separation has completed by reading meta.json
+ * from the session folder. Returns the updated meta if ready (status: 'ready'
+ * and processedAt after the given threshold), or null if still processing.
+ */
+export async function checkStemColabStatus(
+  driveFolderId: string,
+  startedAfter: string,
+): Promise<{ stemNames: string[]; duration: number; model: string; processedAt: string } | null> {
+  if (!isSignedIn()) return null
+
+  try {
+    const token = await getValidToken()
+    const metaFiles = await drive.listFiles(token, `'${driveFolderId}' in parents and name = 'meta.json' and trashed = false`)
+    if (!metaFiles.length) return null
+
+    const metaTxt = await drive.downloadFileAsText(token, metaFiles[0].id)
+    const meta = JSON.parse(metaTxt)
+
+    if (meta.status !== 'ready') return null
+    if (!meta.processedAt) return null
+    if (new Date(meta.processedAt) < new Date(startedAfter)) return null
+
+    // Verify stems exist
+    if (!meta.stemNames || meta.stemNames.length === 0) return null
+
+    return {
+      stemNames: meta.stemNames,
+      duration: meta.duration || 0,
+      model: meta.model || 'unknown',
+      processedAt: meta.processedAt,
+    }
+  } catch (err) {
+    console.debug('[drive-sync] checkStemColabStatus error:', err)
+    return null
+  }
+}
+
+/**
+ * Download a single stem audio file from the session folder.
+ * Returns the ArrayBuffer of the .webm file.
+ */
+export async function downloadStemFile(
+  driveFolderId: string,
+  stemName: string,
+): Promise<ArrayBuffer | null> {
+  if (!isSignedIn()) return null
+
+  try {
+    const token = await getValidToken()
+    const file = await drive.findFileByName(token, `${stemName}.webm`, driveFolderId)
+    if (!file) return null
+    return await drive.downloadFile(token, file.id)
+  } catch (err) {
+    console.error(`[drive-sync] Failed to download ${stemName}.webm:`, err)
+    return null
+  }
+}

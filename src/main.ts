@@ -2349,6 +2349,10 @@ class WebLooper {
 
         closeModal()
 
+        // Hide video player UI before entering stem practice (avoid duplicate UI)
+        this.els.playerSection.classList.add('hidden')
+        this.els.loaderSection.classList.add('hidden')
+
         // Save to OPFS + enter stem player (reuse existing infra)
         // Preserve the original colab session ID so it matches the manifest entry
         const { saveStemSession } = await import('./stems')

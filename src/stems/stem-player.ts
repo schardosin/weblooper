@@ -13,7 +13,7 @@
  * Later we can make WebLooper use this for audio files and the YT player for videos.
  */
 
-import { timeStretch } from '../audio/time-stretch'
+import { timeStretchAsync } from '../audio/time-stretch'
 
 export interface StemTrack {
   name: string
@@ -33,7 +33,7 @@ export type StemPlayerEvent =
   | { type: 'pause' }
   | { type: 'ended' }
   | { type: 'loop-jump' }
-  | { type: 'stretching'; active: boolean }
+  | { type: 'stretching'; active: boolean; progress?: number; stemIndex?: number; totalStems?: number }
 
 export class StemPlayer {
   private audioContext: AudioContext
@@ -64,6 +64,20 @@ export class StemPlayer {
   private duration = 0 // original (un-stretched) duration
   private isStretching = false
   private stretchGeneration = 0 // incremented each time setPlaybackRate is called, to abort stale stretches
+
+  // Debounce rapid speed/pitch tweaks so we only stretch once at the final value
+  private rateDebounceTimer: ReturnType<typeof setTimeout> | null = null
+  private pitchDebounceTimer: ReturnType<typeof setTimeout> | null = null
+  private pendingPlaybackRate: number | null = null
+  private pendingPitchSemitones: number | null = null
+  private rateCommitResolvers: Array<() => void> = []
+  private pitchCommitResolvers: Array<() => void> = []
+  private static readonly RATE_DEBOUNCE_MS = 300
+
+  // LRU cache of pre-stretched stem sets (keyed by rate:pitch)
+  private stretchCache = new Map<string, StemTrack[]>()
+  private stretchCacheOrder: string[] = []
+  private static readonly STRETCH_CACHE_MAX = 4
 
   constructor() {
     this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)()
@@ -154,22 +168,59 @@ export class StemPlayer {
     }
   }
 
-  async setPlaybackRate(rate: number) {
+  setPlaybackRate(rate: number, options?: { immediate?: boolean }): Promise<void> {
     const newRate = Math.max(0.25, Math.min(rate, 2.0))
-    if (Math.abs(newRate - this.playbackRate) < 0.01) return
+    const effectiveRate = this.pendingPlaybackRate ?? this.playbackRate
+    if (Math.abs(newRate - effectiveRate) < 0.01) return Promise.resolve()
 
-    const wasPlaying = this.isPlaying
-    const currentTime = this.getCurrentTime()
+    this.pendingPlaybackRate = newRate
 
-    if (wasPlaying) this.pause()
+    if (this.rateDebounceTimer) clearTimeout(this.rateDebounceTimer)
 
-    this.playbackRate = newRate
-    this.offset = currentTime
+    const commitPromise = new Promise<void>(resolve => {
+      this.rateCommitResolvers.push(resolve)
+    })
 
-    await this.reprocessAudio()
+    const delay = options?.immediate ? 0 : StemPlayer.RATE_DEBOUNCE_MS
+    this.rateDebounceTimer = setTimeout(() => {
+      this.rateDebounceTimer = null
+      const target = this.pendingPlaybackRate
+      this.pendingPlaybackRate = null
+      const resolvers = this.rateCommitResolvers.splice(0)
+      if (target != null) {
+        void this.commitPlaybackRate(target, resolvers)
+      } else {
+        resolvers.forEach(resolve => resolve())
+      }
+    }, delay)
 
-    if (wasPlaying) {
-      this.play()
+    return commitPromise
+  }
+
+  private async commitPlaybackRate(newRate: number, resolvers: Array<() => void>) {
+    const generation = ++this.stretchGeneration
+
+    try {
+      if (Math.abs(newRate - this.playbackRate) < 0.01) return
+
+      const wasPlaying = this.isPlaying
+      const currentTime = this.getCurrentTime()
+
+      if (wasPlaying) this.pause()
+
+      this.playbackRate = newRate
+      this.offset = currentTime
+
+      const completed = await this.reprocessAudio(generation)
+      if (!completed) return
+
+      if (wasPlaying) {
+        this.play()
+      }
+    } finally {
+      if (this.stretchGeneration === generation) {
+        resolvers.forEach(resolve => resolve())
+      }
     }
   }
 
@@ -177,46 +228,102 @@ export class StemPlayer {
    * Re-process all stems with current playbackRate + pitchSemitones.
    * Used by both setPlaybackRate and setPitch.
    */
-  private async reprocessAudio() {
+  private stretchCacheKey(rate: number, pitch: number): string {
+    return `${rate.toFixed(2)}:${pitch}`
+  }
+
+  private getCachedTracks(key: string): StemTrack[] | null {
+    const cached = this.stretchCache.get(key)
+    if (!cached) return null
+
+    // Touch LRU order
+    const idx = this.stretchCacheOrder.indexOf(key)
+    if (idx >= 0) {
+      this.stretchCacheOrder.splice(idx, 1)
+      this.stretchCacheOrder.push(key)
+    }
+
+    return cached
+  }
+
+  private putCachedTracks(key: string, tracks: StemTrack[]) {
+    if (this.stretchCache.has(key)) {
+      const idx = this.stretchCacheOrder.indexOf(key)
+      if (idx >= 0) this.stretchCacheOrder.splice(idx, 1)
+    }
+
+    this.stretchCache.set(key, tracks)
+    this.stretchCacheOrder.push(key)
+
+    while (this.stretchCacheOrder.length > StemPlayer.STRETCH_CACHE_MAX) {
+      const evictKey = this.stretchCacheOrder.shift()!
+      this.stretchCache.delete(evictKey)
+    }
+  }
+
+  private async reprocessAudio(generation: number): Promise<boolean> {
     const needsProcessing =
       Math.abs(this.playbackRate - 1.0) >= 0.01 ||
       Math.abs(this.pitchSemitones) >= 0.01
 
-    // Increment generation so any in-progress processing is aborted
-    const generation = ++this.stretchGeneration
-
     if (!needsProcessing) {
       this.tracks = this.originalTracks
-      return
+      return true
     }
 
+    const cacheKey = this.stretchCacheKey(this.playbackRate, this.pitchSemitones)
+    const cached = this.getCachedTracks(cacheKey)
+    if (cached) {
+      this.tracks = cached
+      return true
+    }
+
+    if (this.stretchGeneration !== generation) return false
+
     this.isStretching = true
-    this.emit({ type: 'stretching', active: true })
+    const totalStems = this.originalTracks.length
+    this.emit({ type: 'stretching', active: true, progress: 0, stemIndex: 0, totalStems })
+
+    let completed = false
 
     try {
       const processed: StemTrack[] = []
       for (let i = 0; i < this.originalTracks.length; i++) {
-        await new Promise(resolve => setTimeout(resolve, 0))
+        if (this.stretchGeneration !== generation) return false
 
-        if (this.stretchGeneration !== generation) return
-
-        const processedBuffer = timeStretch(
+        const processedBuffer = await timeStretchAsync(
           this.originalTracks[i].buffer,
           this.playbackRate,
-          this.pitchSemitones
+          this.pitchSemitones,
         )
         processed.push({ name: this.originalTracks[i].name, buffer: processedBuffer })
+
+        this.emit({
+          type: 'stretching',
+          active: true,
+          progress: (i + 1) / totalStems,
+          stemIndex: i + 1,
+          totalStems,
+        })
       }
 
-      if (this.stretchGeneration !== generation) return
+      if (this.stretchGeneration !== generation) return false
+
       this.tracks = processed
+      this.putCachedTracks(cacheKey, processed)
+      completed = true
+      return true
     } catch (err) {
       console.error('[StemPlayer] Audio processing failed:', err)
       this.tracks = this.originalTracks
+      completed = true
+      return true
+    } finally {
+      if (completed || this.stretchGeneration === generation) {
+        this.isStretching = false
+        this.emit({ type: 'stretching', active: false })
+      }
     }
-
-    this.isStretching = false
-    this.emit({ type: 'stretching', active: false })
   }
 
   setLoop(start: number, end: number) {
@@ -233,22 +340,59 @@ export class StemPlayer {
    * Positive = higher key, negative = lower key.
    * This will re-process the audio buffers.
    */
-  async setPitch(semitones: number) {
-    const newPitch = Math.max(-12, Math.min(12, Math.round(semitones))) // reasonable range: ±1 octave
-    if (newPitch === this.pitchSemitones) return
+  setPitch(semitones: number, options?: { immediate?: boolean }): Promise<void> {
+    const newPitch = Math.max(-12, Math.min(12, Math.round(semitones)))
+    const effectivePitch = this.pendingPitchSemitones ?? this.pitchSemitones
+    if (newPitch === effectivePitch) return Promise.resolve()
 
-    const wasPlaying = this.isPlaying
-    const currentTime = this.getCurrentTime()
+    this.pendingPitchSemitones = newPitch
 
-    if (wasPlaying) this.pause()
+    if (this.pitchDebounceTimer) clearTimeout(this.pitchDebounceTimer)
 
-    this.pitchSemitones = newPitch
-    this.offset = currentTime
+    const commitPromise = new Promise<void>(resolve => {
+      this.pitchCommitResolvers.push(resolve)
+    })
 
-    await this.reprocessAudio()
+    const delay = options?.immediate ? 0 : StemPlayer.RATE_DEBOUNCE_MS
+    this.pitchDebounceTimer = setTimeout(() => {
+      this.pitchDebounceTimer = null
+      const target = this.pendingPitchSemitones
+      this.pendingPitchSemitones = null
+      const resolvers = this.pitchCommitResolvers.splice(0)
+      if (target != null) {
+        void this.commitPitch(target, resolvers)
+      } else {
+        resolvers.forEach(resolve => resolve())
+      }
+    }, delay)
 
-    if (wasPlaying) {
-      this.play()
+    return commitPromise
+  }
+
+  private async commitPitch(newPitch: number, resolvers: Array<() => void>) {
+    const generation = ++this.stretchGeneration
+
+    try {
+      if (newPitch === this.pitchSemitones) return
+
+      const wasPlaying = this.isPlaying
+      const currentTime = this.getCurrentTime()
+
+      if (wasPlaying) this.pause()
+
+      this.pitchSemitones = newPitch
+      this.offset = currentTime
+
+      const completed = await this.reprocessAudio(generation)
+      if (!completed) return
+
+      if (wasPlaying) {
+        this.play()
+      }
+    } finally {
+      if (this.stretchGeneration === generation) {
+        resolvers.forEach(resolve => resolve())
+      }
     }
   }
 
@@ -496,7 +640,15 @@ export class StemPlayer {
   }
 
   getCurrentPlaybackRate(): number {
-    return this.playbackRate
+    return this.pendingPlaybackRate ?? this.playbackRate
+  }
+
+  getPendingPlaybackRate(): number | null {
+    return this.pendingPlaybackRate
+  }
+
+  isCurrentlyStretching(): boolean {
+    return this.isStretching
   }
 
   getLoopRegion(): { start: number; end: number } {
@@ -514,6 +666,10 @@ export class StemPlayer {
   dispose() {
     this.stop()
     this.stopTimeTicker()
+    if (this.rateDebounceTimer) clearTimeout(this.rateDebounceTimer)
+    if (this.pitchDebounceTimer) clearTimeout(this.pitchDebounceTimer)
+    this.stretchCache.clear()
+    this.stretchCacheOrder = []
     try { this.audioContext.close() } catch {}
     this.listeners = []
   }

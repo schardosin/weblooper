@@ -3290,9 +3290,9 @@ class WebLooper {
 
     stemPlayer.setLoop(loopStart, loopEnd)
     stemPlayer.setIsLooping(isLooping)
-    await stemPlayer.setPlaybackRate(currentRate)
+    await stemPlayer.setPlaybackRate(currentRate, { immediate: true })
     if (currentPitch !== 0) {
-      await stemPlayer.setPitch(currentPitch)
+      await stemPlayer.setPitch(currentPitch, { immediate: true })
     }
 
     function persistStemState() {
@@ -3417,6 +3417,10 @@ class WebLooper {
                 </div>
               </div>
               <div id="stem-speed-real-chips" class="flex flex-wrap gap-1.5"></div>
+              <div id="stem-stretching-indicator" class="hidden mt-2 text-[11px] text-amber-400/90 flex items-center gap-2">
+                <span class="inline-block w-3 h-3 border-2 border-amber-400/40 border-t-amber-400 rounded-full animate-spin"></span>
+                <span id="stem-stretching-label">Adjusting speed…</span>
+              </div>
             </div>
 
             <!-- Key / Pitch Shift -->
@@ -3762,6 +3766,9 @@ class WebLooper {
     const speedChips = document.getElementById('stem-speed-real-chips')!
     const speedLabel = document.getElementById('stem-speed-real')!
 
+    const stretchingIndicator = document.getElementById('stem-stretching-indicator')!
+    const stretchingLabel = document.getElementById('stem-stretching-label')!
+
     function updateSpeed() {
       currentRate = stemPlayer.getCurrentPlaybackRate()
       speedLabel.textContent = currentRate.toFixed(2) + '×'
@@ -3769,14 +3776,22 @@ class WebLooper {
         const v = parseFloat(btn.textContent!.replace('×', ''))
         btn.classList.toggle('active', Math.abs(v - currentRate) < 0.01)
       })
-      persistStemState()
+      if (!stemPlayer.isCurrentlyStretching() && !stemPlayer.getPendingPlaybackRate()) {
+        persistStemState()
+      }
+    }
+
+    function setTargetSpeed(rate: number) {
+      currentRate = rate
+      stemPlayer.setPlaybackRate(rate)
+      updateSpeed()
     }
 
     ;[0.25, 0.5, 0.75, 1, 1.25, 1.5, 2].forEach(s => {
       const b = document.createElement('button')
       b.className = `speed-chip ${Math.abs(s - currentRate) < 0.01 ? 'active' : ''}`
       b.textContent = s + '×'
-      b.onclick = () => { stemPlayer.setPlaybackRate(s); updateSpeed() }
+      b.onclick = () => setTargetSpeed(s)
       speedChips.appendChild(b)
     })
 
@@ -3784,24 +3799,24 @@ class WebLooper {
     const speedDecBtn = document.getElementById('stem-speed-dec-real')!
     const speedIncBtn = document.getElementById('stem-speed-inc-real')!
     speedDecBtn.onclick = () => {
-      const next = Math.max(0.25, Math.round((stemPlayer.getCurrentPlaybackRate() - 0.05) * 100) / 100)
-      stemPlayer.setPlaybackRate(next); updateSpeed()
+      const next = Math.max(0.25, Math.round((currentRate - 0.05) * 100) / 100)
+      setTargetSpeed(next)
     }
     speedIncBtn.onclick = () => {
-      const next = Math.min(2.0, Math.round((stemPlayer.getCurrentPlaybackRate() + 0.05) * 100) / 100)
-      stemPlayer.setPlaybackRate(next); updateSpeed()
+      const next = Math.min(2.0, Math.round((currentRate + 0.05) * 100) / 100)
+      setTargetSpeed(next)
     }
 
     // Wire pitch buttons (elements were already gotten earlier)
-    pitchDecBtn.onclick = async () => {
+    pitchDecBtn.onclick = () => {
       currentPitch = Math.max(-12, currentPitch - 1)
-      await stemPlayer.setPitch(currentPitch)
+      void stemPlayer.setPitch(currentPitch)
       updatePitchUI()
     }
 
-    pitchIncBtn.onclick = async () => {
+    pitchIncBtn.onclick = () => {
       currentPitch = Math.min(12, currentPitch + 1)
-      await stemPlayer.setPitch(currentPitch)
+      void stemPlayer.setPitch(currentPitch)
       updatePitchUI()
     }
 
@@ -4234,6 +4249,23 @@ class WebLooper {
       if (ev.type === 'play' || ev.type === 'pause') {
         playLabel.textContent = stemPlayer.isCurrentlyPlaying() ? 'PAUSE' : 'PLAY'
       }
+
+      if (ev.type === 'stretching') {
+        if (ev.active) {
+          stretchingIndicator.classList.remove('hidden')
+          const pct = ev.progress != null ? Math.round(ev.progress * 100) : null
+          const stemInfo = ev.stemIndex != null && ev.totalStems
+            ? ` (${ev.stemIndex}/${ev.totalStems})`
+            : ''
+          stretchingLabel.textContent = pct != null
+            ? `Adjusting speed… ${pct}%${stemInfo}`
+            : 'Adjusting speed…'
+        } else {
+          stretchingIndicator.classList.add('hidden')
+          updateSpeed()
+          persistStemState()
+        }
+      }
     })
 
     // ---------- Keyboard shortcuts ----------
@@ -4292,20 +4324,20 @@ class WebLooper {
           ev.preventDefault()
           this.showShortcuts()
           break
-        case '1': stemPlayer.setPlaybackRate(0.25); updateSpeed(); break
-        case '2': stemPlayer.setPlaybackRate(0.75); updateSpeed(); break
-        case '3': stemPlayer.setPlaybackRate(1); updateSpeed(); break
-        case '4': stemPlayer.setPlaybackRate(1.25); updateSpeed(); break
-        case '5': stemPlayer.setPlaybackRate(1.5); updateSpeed(); break
-        case '6': stemPlayer.setPlaybackRate(2); updateSpeed(); break
+        case '1': setTargetSpeed(0.25); break
+        case '2': setTargetSpeed(0.75); break
+        case '3': setTargetSpeed(1); break
+        case '4': setTargetSpeed(1.25); break
+        case '5': setTargetSpeed(1.5); break
+        case '6': setTargetSpeed(2); break
         case '-': {
-          const next = Math.max(0.25, Math.round((stemPlayer.getCurrentPlaybackRate() - 0.05) * 100) / 100)
-          stemPlayer.setPlaybackRate(next); updateSpeed(); break
+          const next = Math.max(0.25, Math.round((currentRate - 0.05) * 100) / 100)
+          setTargetSpeed(next); break
         }
         case '=':
         case '+': {
-          const next = Math.min(2.0, Math.round((stemPlayer.getCurrentPlaybackRate() + 0.05) * 100) / 100)
-          stemPlayer.setPlaybackRate(next); updateSpeed(); break
+          const next = Math.min(2.0, Math.round((currentRate + 0.05) * 100) / 100)
+          setTargetSpeed(next); break
         }
       }
     }

@@ -14,6 +14,7 @@
  */
 
 import { timeStretchAsync } from '../audio/time-stretch'
+import { StretchCancelledError, cancelPendingStretchJobs } from '../audio/time-stretch-worker-client'
 
 export interface StemTrack {
   name: string
@@ -33,7 +34,7 @@ export type StemPlayerEvent =
   | { type: 'pause' }
   | { type: 'ended' }
   | { type: 'loop-jump' }
-  | { type: 'stretching'; active: boolean; progress?: number; stemIndex?: number; totalStems?: number }
+  | { type: 'stretching'; active: boolean; phase?: 'pending' | 'processing'; progress?: number; stemIndex?: number; totalStems?: number }
 
 export class StemPlayer {
   private audioContext: AudioContext
@@ -72,7 +73,7 @@ export class StemPlayer {
   private pendingPitchSemitones: number | null = null
   private rateCommitResolvers: Array<() => void> = []
   private pitchCommitResolvers: Array<() => void> = []
-  private static readonly RATE_DEBOUNCE_MS = 300
+  private static readonly RATE_DEBOUNCE_MS = 800
 
   // LRU cache of pre-stretched stem sets (keyed by rate:pitch)
   private stretchCache = new Map<string, StemTrack[]>()
@@ -170,6 +171,16 @@ export class StemPlayer {
 
   setPlaybackRate(rate: number, options?: { immediate?: boolean }): Promise<void> {
     const newRate = Math.max(0.25, Math.min(rate, 2.0))
+
+    if (!options?.immediate && this.isStretching) {
+      return Promise.resolve()
+    }
+
+    if (!options?.immediate && Math.abs(newRate - this.playbackRate) < 0.01) {
+      this.clearPendingPlaybackRate()
+      return Promise.resolve()
+    }
+
     const effectiveRate = this.pendingPlaybackRate ?? this.playbackRate
     if (Math.abs(newRate - effectiveRate) < 0.01) return Promise.resolve()
 
@@ -181,20 +192,58 @@ export class StemPlayer {
       this.rateCommitResolvers.push(resolve)
     })
 
+    if (!options?.immediate) {
+      this.emit({ type: 'stretching', active: true, phase: 'pending' })
+    }
+
     const delay = options?.immediate ? 0 : StemPlayer.RATE_DEBOUNCE_MS
     this.rateDebounceTimer = setTimeout(() => {
       this.rateDebounceTimer = null
-      const target = this.pendingPlaybackRate
-      this.pendingPlaybackRate = null
-      const resolvers = this.rateCommitResolvers.splice(0)
-      if (target != null) {
-        void this.commitPlaybackRate(target, resolvers)
-      } else {
-        resolvers.forEach(resolve => resolve())
-      }
+      this.flushPendingPlaybackRate()
     }, delay)
 
     return commitPromise
+  }
+
+  private clearPendingPlaybackRate() {
+    this.pendingPlaybackRate = null
+    if (this.rateDebounceTimer) {
+      clearTimeout(this.rateDebounceTimer)
+      this.rateDebounceTimer = null
+    }
+    const resolvers = this.rateCommitResolvers.splice(0)
+    resolvers.forEach(resolve => resolve())
+    this.emitStretchingIdleIfReady()
+  }
+
+  private flushPendingPlaybackRate() {
+    const target = this.pendingPlaybackRate
+    this.pendingPlaybackRate = null
+    const resolvers = this.rateCommitResolvers.splice(0)
+
+    if (target == null) {
+      resolvers.forEach(resolve => resolve())
+      this.emitStretchingIdleIfReady()
+      return
+    }
+
+    if (this.isStretching) {
+      // A stretch is still running — keep the target and try again when it finishes
+      this.pendingPlaybackRate = target
+      this.rateCommitResolvers.push(...resolvers)
+      return
+    }
+
+    void this.commitPlaybackRate(target, resolvers)
+  }
+
+  private maybeFlushDeferredPlaybackRate() {
+    if (this.isStretching || this.rateDebounceTimer || this.pendingPlaybackRate == null) return
+    if (Math.abs(this.pendingPlaybackRate - this.playbackRate) < 0.01) {
+      this.clearPendingPlaybackRate()
+      return
+    }
+    this.flushPendingPlaybackRate()
   }
 
   private async commitPlaybackRate(newRate: number, resolvers: Array<() => void>) {
@@ -220,8 +269,18 @@ export class StemPlayer {
     } finally {
       if (this.stretchGeneration === generation) {
         resolvers.forEach(resolve => resolve())
+        this.emitStretchingIdleIfReady()
       }
     }
+  }
+
+  private emitStretchingIdleIfReady() {
+    if (this.isStretching) return
+    if (this.rateDebounceTimer || this.pendingPlaybackRate != null) {
+      this.emit({ type: 'stretching', active: true, phase: 'pending' })
+      return
+    }
+    this.emit({ type: 'stretching', active: false })
   }
 
   /**
@@ -280,9 +339,11 @@ export class StemPlayer {
 
     if (this.stretchGeneration !== generation) return false
 
+    cancelPendingStretchJobs()
+
     this.isStretching = true
     const totalStems = this.originalTracks.length
-    this.emit({ type: 'stretching', active: true, progress: 0, stemIndex: 0, totalStems })
+    this.emit({ type: 'stretching', active: true, phase: 'processing', progress: 0, stemIndex: 0, totalStems })
 
     let completed = false
 
@@ -291,16 +352,28 @@ export class StemPlayer {
       for (let i = 0; i < this.originalTracks.length; i++) {
         if (this.stretchGeneration !== generation) return false
 
-        const processedBuffer = await timeStretchAsync(
-          this.originalTracks[i].buffer,
-          this.playbackRate,
-          this.pitchSemitones,
-        )
+        let processedBuffer: AudioBuffer
+        try {
+          processedBuffer = await timeStretchAsync(
+            this.originalTracks[i].buffer,
+            this.playbackRate,
+            this.pitchSemitones,
+          )
+        } catch (err) {
+          if (err instanceof StretchCancelledError || this.stretchGeneration !== generation) {
+            return false
+          }
+          throw err
+        }
+
+        if (this.stretchGeneration !== generation) return false
+
         processed.push({ name: this.originalTracks[i].name, buffer: processedBuffer })
 
         this.emit({
           type: 'stretching',
           active: true,
+          phase: 'processing',
           progress: (i + 1) / totalStems,
           stemIndex: i + 1,
           totalStems,
@@ -321,7 +394,9 @@ export class StemPlayer {
     } finally {
       if (completed || this.stretchGeneration === generation) {
         this.isStretching = false
-        this.emit({ type: 'stretching', active: false })
+        this.emitStretchingIdleIfReady()
+        this.maybeFlushDeferredPlaybackRate()
+        this.maybeFlushDeferredPitch()
       }
     }
   }
@@ -342,6 +417,16 @@ export class StemPlayer {
    */
   setPitch(semitones: number, options?: { immediate?: boolean }): Promise<void> {
     const newPitch = Math.max(-12, Math.min(12, Math.round(semitones)))
+
+    if (!options?.immediate && this.isStretching) {
+      return Promise.resolve()
+    }
+
+    if (!options?.immediate && newPitch === this.pitchSemitones) {
+      this.clearPendingPitch()
+      return Promise.resolve()
+    }
+
     const effectivePitch = this.pendingPitchSemitones ?? this.pitchSemitones
     if (newPitch === effectivePitch) return Promise.resolve()
 
@@ -356,17 +441,48 @@ export class StemPlayer {
     const delay = options?.immediate ? 0 : StemPlayer.RATE_DEBOUNCE_MS
     this.pitchDebounceTimer = setTimeout(() => {
       this.pitchDebounceTimer = null
-      const target = this.pendingPitchSemitones
-      this.pendingPitchSemitones = null
-      const resolvers = this.pitchCommitResolvers.splice(0)
-      if (target != null) {
-        void this.commitPitch(target, resolvers)
-      } else {
-        resolvers.forEach(resolve => resolve())
-      }
+      this.flushPendingPitch()
     }, delay)
 
     return commitPromise
+  }
+
+  private clearPendingPitch() {
+    this.pendingPitchSemitones = null
+    if (this.pitchDebounceTimer) {
+      clearTimeout(this.pitchDebounceTimer)
+      this.pitchDebounceTimer = null
+    }
+    const resolvers = this.pitchCommitResolvers.splice(0)
+    resolvers.forEach(resolve => resolve())
+  }
+
+  private flushPendingPitch() {
+    const target = this.pendingPitchSemitones
+    this.pendingPitchSemitones = null
+    const resolvers = this.pitchCommitResolvers.splice(0)
+
+    if (target == null) {
+      resolvers.forEach(resolve => resolve())
+      return
+    }
+
+    if (this.isStretching) {
+      this.pendingPitchSemitones = target
+      this.pitchCommitResolvers.push(...resolvers)
+      return
+    }
+
+    void this.commitPitch(target, resolvers)
+  }
+
+  private maybeFlushDeferredPitch() {
+    if (this.isStretching || this.pitchDebounceTimer || this.pendingPitchSemitones == null) return
+    if (this.pendingPitchSemitones === this.pitchSemitones) {
+      this.clearPendingPitch()
+      return
+    }
+    this.flushPendingPitch()
   }
 
   private async commitPitch(newPitch: number, resolvers: Array<() => void>) {
@@ -648,6 +764,11 @@ export class StemPlayer {
   }
 
   isCurrentlyStretching(): boolean {
+    return this.isStretching
+  }
+
+  /** True while audio is being reprocessed — speed/pitch inputs should be locked. */
+  isPlaybackRateLocked(): boolean {
     return this.isStretching
   }
 

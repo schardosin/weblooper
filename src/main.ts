@@ -1469,7 +1469,7 @@ class WebLooper {
     if (!section || !listEl) return
 
     try {
-      const { listStemSessions, loadStemSession, deleteStemSession } = await import('./stems')
+      const { listStemSessions, deleteStemSession } = await import('./stems')
       const sessions = listStemSessions()
 
       if (sessions.length === 0) {
@@ -1501,18 +1501,9 @@ class WebLooper {
         `
 
         row.querySelector('.load-prev')?.addEventListener('click', async () => {
-          const loaded = await loadStemSession(sess.id)
-          if (loaded && loaded.stems.length > 0) {
-            // Enter practice mode directly with the persisted stems (no re-separation)
-            this.els.loaderSection.classList.add('hidden')
-
-            // Always open the pure stem practice view (no video) — regardless of source
-            await this.enterStemPracticeWithRealStems(
-              { fileName: loaded.meta.fileName || loaded.meta.youtubeVideoTitle || 'Stem Session', duration: loaded.meta.duration },
-              loaded.stems,
-              loaded.meta,
-            )
-          } else {
+          const loadBtn = row.querySelector('.load-prev') as HTMLButtonElement
+          const ok = await this.loadAndOpenLocalStemSession(sess.id, label, loadBtn)
+          if (!ok) {
             console.error('[stems] Failed to load persisted session', sess.id, sess.fileName)
             try {
               await deleteStemSession(sess.id)
@@ -1642,22 +1633,17 @@ class WebLooper {
         `
 
         row.querySelector('.load-init')?.addEventListener('click', async () => {
+          const loadBtn = row.querySelector('.load-init') as HTMLButtonElement
           if (sess.source === 'cloud') {
-            // Download from cloud
-            await this.loadCloudSession(sess as import('./drive').CloudSession)
+            this.setStemLoadButtonState(loadBtn, true, isCloudOnly ? 'Download' : 'Load')
+            try {
+              await this.loadCloudSession(sess as import('./drive').CloudSession)
+            } finally {
+              this.setStemLoadButtonState(loadBtn, false, isCloudOnly ? 'Download' : 'Load')
+            }
           } else {
-            // Load from local OPFS
-            const loaded = await loadStemSession(sess.id)
-            if (loaded && loaded.stems.length > 0) {
-              this.els.loaderSection.classList.add('hidden')
-
-              // Always open the pure stem practice view (no video)
-              await this.enterStemPracticeWithRealStems(
-                { fileName: loaded.meta.fileName || loaded.meta.youtubeVideoTitle || 'Stem Session', duration: loaded.meta.duration },
-                loaded.stems,
-                loaded.meta,
-              )
-            } else {
+            const ok = await this.loadAndOpenLocalStemSession(sess.id, label, loadBtn)
+            if (!ok) {
               console.error('[stems] Failed to load persisted session', sess.id, sess.fileName)
               try {
                 await deleteStemSession(sess.id)
@@ -1719,8 +1705,12 @@ class WebLooper {
             loadBtn.replaceWith(newLoadBtn)
             newLoadBtn.addEventListener('click', async () => {
               const cloudSession = cloudSessions.find(cs => cs.id === sess.id)
-              if (cloudSession) {
+              if (!cloudSession) return
+              this.setStemLoadButtonState(newLoadBtn, true, 'Download')
+              try {
                 await this.loadCloudSession(cloudSession)
+              } finally {
+                this.setStemLoadButtonState(newLoadBtn, false, 'Download')
               }
             })
 
@@ -1798,32 +1788,20 @@ class WebLooper {
    * Load a stem session from Google Drive (cloud-only session).
    */
   private async loadCloudSession(session: import('./drive').CloudSession) {
+    const title = session.fileName || session.youtubeVideoTitle || 'Stem Session'
+    this.showStemSessionLoading(title, 'Connecting to Google Drive…')
+
     try {
       const { downloadStemSession } = await import('./drive')
 
-      // Show a loading indicator
-      const loaderSection = this.els.loaderSection
-      const prevHTML = loaderSection.innerHTML
-      loaderSection.innerHTML = `
-        <div class="text-center py-12">
-          <div class="text-emerald-400 text-xs tracking-[2px] mb-2">DOWNLOADING FROM CLOUD</div>
-          <div class="text-xl font-semibold tracking-tight mb-2">${session.fileName || 'Stem Session'}</div>
-          <div id="cloud-download-status" class="text-sm text-zinc-400">Downloading stems...</div>
-          <div class="mt-4 h-2 bg-zinc-800 rounded-full overflow-hidden max-w-[400px] mx-auto">
-            <div id="cloud-download-bar" class="h-2 bg-emerald-500 w-[5%] transition-all"></div>
-          </div>
-        </div>
-      `
-
-      const statusEl = document.getElementById('cloud-download-status')
-      const barEl = document.getElementById('cloud-download-bar')
-
       const stems = await downloadStemSession(session, (p) => {
-        if (statusEl) statusEl.textContent = p.message
-        if (barEl && p.percent !== undefined) barEl.style.width = `${p.percent}%`
+        const pct = p.percent ?? 15
+        this.updateStemSessionLoading(p.message, Math.min(70, pct))
       })
 
       if (stems && stems.length > 0) {
+        this.updateStemSessionLoading('Caching stems locally…', 75)
+
         // Also save to OPFS for future local access (cache), preserving the cloud session ID
         try {
           const { saveStemSession } = await import('./stems')
@@ -1844,20 +1822,24 @@ class WebLooper {
           console.warn('[drive-sync] Failed to cache cloud session locally:', e)
         }
 
-        // Hide loader and open stem player
-        loaderSection.classList.add('hidden')
+        this.updateStemSessionLoading('Preparing practice view…', 85)
+        this.els.loaderSection.classList.add('hidden')
+        this.els.playerSection.classList.add('hidden')
+
         await this.enterStemPracticeWithRealStems(
           { fileName: session.fileName || 'Cloud Session', duration: session.duration },
           stems,
           session,
         )
+
+        this.hideStemSessionLoading()
       } else {
-        // Restore loader
-        loaderSection.innerHTML = prevHTML
+        this.hideStemSessionLoading()
         alert('Failed to download stems from cloud. The session may have been deleted.')
       }
     } catch (err: any) {
       console.error('[drive-sync] Cloud session load failed:', err)
+      this.hideStemSessionLoading()
       alert(`Failed to load cloud session: ${err.message}`)
     }
   }
@@ -1869,6 +1851,107 @@ class WebLooper {
   private reEnableSeparateStemsButton() {
     const btn = document.getElementById('btn-separate-stems')
     if (btn) btn.removeAttribute('disabled')
+  }
+
+  private escapeHtml(text: string): string {
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+  }
+
+  /** Full-screen loading overlay — call synchronously on click, before any await. */
+  private showStemSessionLoading(title: string, status = 'Starting…') {
+    this.hideStemSessionLoading()
+
+    const overlay = document.createElement('div')
+    overlay.id = 'stem-session-loading-overlay'
+    overlay.className = 'fixed inset-0 z-[600] bg-[#0a0a0b] flex flex-col items-center justify-center p-6'
+    overlay.innerHTML = `
+      <div class="max-w-md w-full text-center">
+        <div class="inline-block w-10 h-10 border-2 border-emerald-500/30 border-t-emerald-400 rounded-full animate-spin mb-6"></div>
+        <div class="text-[10px] uppercase tracking-[2px] text-emerald-400 mb-2">Loading session</div>
+        <div id="stem-loading-title" class="text-xl font-semibold tracking-tight text-white truncate px-4">${this.escapeHtml(title)}</div>
+        <div id="stem-loading-status" class="text-sm text-zinc-400 mt-3 px-4">${this.escapeHtml(status)}</div>
+        <div class="mt-5 h-1.5 bg-zinc-800 rounded-full overflow-hidden max-w-xs mx-auto">
+          <div id="stem-loading-bar" class="h-full bg-emerald-500 w-[8%] transition-all duration-300"></div>
+        </div>
+        <div class="text-[11px] text-zinc-500 mt-4">This may take a moment on slower devices</div>
+      </div>
+    `
+    document.body.appendChild(overlay)
+    void overlay.getBoundingClientRect()
+  }
+
+  private updateStemSessionLoading(status: string, progress?: number) {
+    const statusEl = document.getElementById('stem-loading-status')
+    const barEl = document.getElementById('stem-loading-bar') as HTMLElement | null
+    if (statusEl) statusEl.textContent = status
+    if (barEl && progress != null) {
+      barEl.style.width = `${Math.max(8, Math.min(100, progress))}%`
+    }
+  }
+
+  private hideStemSessionLoading() {
+    document.getElementById('stem-session-loading-overlay')?.remove()
+  }
+
+  private setStemLoadButtonState(btn: HTMLButtonElement | null, loading: boolean, idleText = 'Load') {
+    if (!btn) return
+    btn.disabled = loading
+    btn.textContent = loading ? 'Loading…' : idleText
+    btn.classList.toggle('opacity-60', loading)
+    btn.classList.toggle('pointer-events-none', loading)
+  }
+
+  /**
+   * Load a locally persisted stem session and open stem practice.
+   * Shows immediate loading feedback before any heavy async work.
+   */
+  private async loadAndOpenLocalStemSession(
+    sessionId: string,
+    label: string,
+    loadBtn?: HTMLButtonElement | null,
+  ): Promise<boolean> {
+    this.showStemSessionLoading(label, 'Reading saved stems from your device…')
+    this.setStemLoadButtonState(loadBtn ?? null, true)
+
+    try {
+      const { loadStemSession } = await import('./stems')
+      const loaded = await loadStemSession(sessionId, (p) => {
+        const pct = 10 + (p.stemIndex / p.totalStems) * 60
+        this.updateStemSessionLoading(p.message, pct)
+      })
+
+      if (!loaded || loaded.stems.length === 0) {
+        this.hideStemSessionLoading()
+        return false
+      }
+
+      this.updateStemSessionLoading('Preparing practice view…', 78)
+      this.els.loaderSection.classList.add('hidden')
+      this.els.playerSection.classList.add('hidden')
+
+      await this.enterStemPracticeWithRealStems(
+        {
+          fileName: loaded.meta.fileName || loaded.meta.youtubeVideoTitle || label,
+          duration: loaded.meta.duration,
+        },
+        loaded.stems,
+        loaded.meta,
+      )
+
+      this.hideStemSessionLoading()
+      return true
+    } catch (err) {
+      console.error('[stems] loadAndOpenLocalStemSession failed:', err)
+      this.hideStemSessionLoading()
+      this.els.loaderSection.classList.remove('hidden')
+      return false
+    } finally {
+      this.setStemLoadButtonState(loadBtn ?? null, false)
+    }
   }
 
   /**
@@ -3231,10 +3314,21 @@ class WebLooper {
     realStems: Array<{ name: string; buffer: AudioBuffer }>,
     sessionMeta?: import('./stems/persistence').StemSessionMeta,
   ) {
+    document.getElementById('stem-practice-area')?.remove()
+
     const stemArea = document.createElement('div')
     stemArea.id = 'stem-practice-area'
     stemArea.className = 'max-w-[1100px] mx-auto'
+    stemArea.innerHTML = `
+      <div class="py-20 text-center">
+        <div class="inline-block w-8 h-8 border-2 border-emerald-500/30 border-t-emerald-400 rounded-full animate-spin mb-4"></div>
+        <div class="text-sm text-zinc-400">Setting up stem practice…</div>
+        <div class="text-xs text-zinc-500 mt-1">${this.escapeHtml(decoded.fileName)}</div>
+      </div>
+    `
     this.els.playerSection.parentElement!.appendChild(stemArea)
+    this.els.playerSection.classList.add('hidden')
+    this.updateStemSessionLoading('Initializing player…', 88)
 
     const stemTracks = realStems.map(s => ({ name: s.name, buffer: s.buffer }))
 
@@ -3288,12 +3382,16 @@ class WebLooper {
       presets = [...savedState.presets]
     }
 
+    this.updateStemSessionLoading('Restoring your settings…', 94)
+
     stemPlayer.setLoop(loopStart, loopEnd)
     stemPlayer.setIsLooping(isLooping)
     await stemPlayer.setPlaybackRate(currentRate, { immediate: true })
     if (currentPitch !== 0) {
       await stemPlayer.setPitch(currentPitch, { immediate: true })
     }
+
+    this.updateStemSessionLoading('Building interface…', 98)
 
     function persistStemState() {
       saveStemState({ start: loopStart, end: loopEnd, isLooping, playbackRate: currentRate, pitchSemitones: currentPitch, presets })
@@ -3769,6 +3867,20 @@ class WebLooper {
     const stretchingIndicator = document.getElementById('stem-stretching-indicator')!
     const stretchingLabel = document.getElementById('stem-stretching-label')!
 
+    function setSpeedControlsEnabled(enabled: boolean) {
+      ;(speedDecBtn as HTMLButtonElement).disabled = !enabled
+      ;(speedIncBtn as HTMLButtonElement).disabled = !enabled
+      speedChips.querySelectorAll('button').forEach(btn => {
+        (btn as HTMLButtonElement).disabled = !enabled
+      })
+      speedDecBtn.classList.toggle('opacity-40', !enabled)
+      speedIncBtn.classList.toggle('opacity-40', !enabled)
+      speedDecBtn.classList.toggle('pointer-events-none', !enabled)
+      speedIncBtn.classList.toggle('pointer-events-none', !enabled)
+      speedChips.classList.toggle('opacity-40', !enabled)
+      speedChips.classList.toggle('pointer-events-none', !enabled)
+    }
+
     function updateSpeed() {
       currentRate = stemPlayer.getCurrentPlaybackRate()
       speedLabel.textContent = currentRate.toFixed(2) + '×'
@@ -3782,6 +3894,7 @@ class WebLooper {
     }
 
     function setTargetSpeed(rate: number) {
+      if (stemPlayer.isPlaybackRateLocked()) return
       currentRate = rate
       stemPlayer.setPlaybackRate(rate)
       updateSpeed()
@@ -3809,12 +3922,14 @@ class WebLooper {
 
     // Wire pitch buttons (elements were already gotten earlier)
     pitchDecBtn.onclick = () => {
+      if (stemPlayer.isPlaybackRateLocked()) return
       currentPitch = Math.max(-12, currentPitch - 1)
       void stemPlayer.setPitch(currentPitch)
       updatePitchUI()
     }
 
     pitchIncBtn.onclick = () => {
+      if (stemPlayer.isPlaybackRateLocked()) return
       currentPitch = Math.min(12, currentPitch + 1)
       void stemPlayer.setPitch(currentPitch)
       updatePitchUI()
@@ -4253,15 +4368,22 @@ class WebLooper {
       if (ev.type === 'stretching') {
         if (ev.active) {
           stretchingIndicator.classList.remove('hidden')
-          const pct = ev.progress != null ? Math.round(ev.progress * 100) : null
-          const stemInfo = ev.stemIndex != null && ev.totalStems
-            ? ` (${ev.stemIndex}/${ev.totalStems})`
-            : ''
-          stretchingLabel.textContent = pct != null
-            ? `Adjusting speed… ${pct}%${stemInfo}`
-            : 'Adjusting speed…'
+          if (ev.phase === 'pending') {
+            setSpeedControlsEnabled(true)
+            stretchingLabel.textContent = `Speed ${currentRate.toFixed(2)}× — applies in a moment (keep clicking ± to adjust)`
+          } else {
+            setSpeedControlsEnabled(false)
+            const pct = ev.progress != null ? Math.round(ev.progress * 100) : null
+            const stemInfo = ev.stemIndex != null && ev.totalStems
+              ? ` (${ev.stemIndex}/${ev.totalStems})`
+              : ''
+            stretchingLabel.textContent = pct != null
+              ? `Adjusting speed… ${pct}%${stemInfo}`
+              : 'Adjusting speed…'
+          }
         } else {
           stretchingIndicator.classList.add('hidden')
+          setSpeedControlsEnabled(true)
           updateSpeed()
           persistStemState()
         }
@@ -4324,18 +4446,20 @@ class WebLooper {
           ev.preventDefault()
           this.showShortcuts()
           break
-        case '1': setTargetSpeed(0.25); break
-        case '2': setTargetSpeed(0.75); break
-        case '3': setTargetSpeed(1); break
-        case '4': setTargetSpeed(1.25); break
-        case '5': setTargetSpeed(1.5); break
-        case '6': setTargetSpeed(2); break
+        case '1': if (!stemPlayer.isPlaybackRateLocked()) setTargetSpeed(0.25); break
+        case '2': if (!stemPlayer.isPlaybackRateLocked()) setTargetSpeed(0.75); break
+        case '3': if (!stemPlayer.isPlaybackRateLocked()) setTargetSpeed(1); break
+        case '4': if (!stemPlayer.isPlaybackRateLocked()) setTargetSpeed(1.25); break
+        case '5': if (!stemPlayer.isPlaybackRateLocked()) setTargetSpeed(1.5); break
+        case '6': if (!stemPlayer.isPlaybackRateLocked()) setTargetSpeed(2); break
         case '-': {
+          if (stemPlayer.isPlaybackRateLocked()) break
           const next = Math.max(0.25, Math.round((currentRate - 0.05) * 100) / 100)
           setTargetSpeed(next); break
         }
         case '=':
         case '+': {
+          if (stemPlayer.isPlaybackRateLocked()) break
           const next = Math.min(2.0, Math.round((currentRate + 0.05) * 100) / 100)
           setTargetSpeed(next); break
         }
@@ -4405,6 +4529,7 @@ class WebLooper {
       this.renderInitialRecentVideos()
     })
 
+    this.hideStemSessionLoading()
     console.log('%c[weblooper] Real stems loaded into StemPlayer (full controls + presets)', 'color:#166534')
   }
 

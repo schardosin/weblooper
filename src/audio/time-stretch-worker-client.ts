@@ -5,6 +5,13 @@
 
 import { stretchChannels } from './time-stretch-core'
 
+export class StretchCancelledError extends Error {
+  constructor() {
+    super('Stretch cancelled')
+    this.name = 'StretchCancelledError'
+  }
+}
+
 interface StretchJob {
   id: number
   channels: Float32Array[]
@@ -116,6 +123,15 @@ function pumpQueue() {
     },
     { transfer: transfers },
   )
+}
+
+/** Drop queued (not yet running) stretch jobs — e.g. when a newer tempo commit supersedes them. */
+export function cancelPendingStretchJobs(): void {
+  while (queue.length > 0) {
+    const job = queue.shift()!
+    pending.delete(job.id)
+    job.reject(new StretchCancelledError())
+  }
 }
 
 export function stretchChannelsAsync(

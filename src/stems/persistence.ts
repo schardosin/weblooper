@@ -189,7 +189,16 @@ export async function saveStemSession(
 /**
  * Load a previous session (metadata + reconstructed AudioBuffers).
  */
-export async function loadStemSession(id: string): Promise<{
+export interface StemLoadProgress {
+  message: string
+  stemIndex: number
+  totalStems: number
+}
+
+export async function loadStemSession(
+  id: string,
+  onProgress?: (progress: StemLoadProgress) => void,
+): Promise<{
   meta: StemSessionMeta
   stems: Array<{ name: string; buffer: AudioBuffer }>
 } | null> {
@@ -220,7 +229,16 @@ export async function loadStemSession(id: string): Promise<{
     const AudioCtx = (window.AudioContext || (window as any).webkitAudioContext)
     const ctx = new AudioCtx()
 
-    for (const name of meta.stemNames) {
+    const totalStems = meta.stemNames.length
+
+    for (let stemIndex = 0; stemIndex < meta.stemNames.length; stemIndex++) {
+      const name = meta.stemNames[stemIndex]
+      onProgress?.({
+        message: `Loading stem ${stemIndex + 1} of ${totalStems}: ${name}…`,
+        stemIndex: stemIndex + 1,
+        totalStems,
+      })
+
       let fileHandle: FileSystemFileHandle
       try {
         fileHandle = await sessionDir.getFileHandle(`${name}.pcm`)

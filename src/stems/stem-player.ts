@@ -13,8 +13,13 @@
  * Later we can make WebLooper use this for audio files and the YT player for videos.
  */
 
+import { isLowMemoryDevice, stretchCacheMaxEntries } from '../audio/device-memory'
 import { timeStretchAsync } from '../audio/time-stretch'
-import { StretchCancelledError, cancelPendingStretchJobs } from '../audio/time-stretch-worker-client'
+import {
+  StretchCancelledError,
+  cancelPendingStretchJobs,
+  terminateStretchWorker,
+} from '../audio/time-stretch-worker-client'
 
 export interface StemTrack {
   name: string
@@ -75,10 +80,10 @@ export class StemPlayer {
   private pitchCommitResolvers: Array<() => void> = []
   private static readonly RATE_DEBOUNCE_MS = 800
 
-  // LRU cache of pre-stretched stem sets (keyed by rate:pitch)
+  // LRU cache of pre-stretched stem sets (keyed by rate:pitch); 0 on low-memory devices
   private stretchCache = new Map<string, StemTrack[]>()
   private stretchCacheOrder: string[] = []
-  private static readonly STRETCH_CACHE_MAX = 4
+  private readonly stretchCacheMax = stretchCacheMaxEntries()
 
   constructor() {
     this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)()
@@ -305,7 +310,17 @@ export class StemPlayer {
     return cached
   }
 
+  private evictStretchCacheEntry(evictKey: string) {
+    const evicted = this.stretchCache.get(evictKey)
+    this.stretchCache.delete(evictKey)
+    if (evicted && this.tracks === evicted) {
+      this.tracks = this.originalTracks
+    }
+  }
+
   private putCachedTracks(key: string, tracks: StemTrack[]) {
+    if (this.stretchCacheMax === 0) return
+
     if (this.stretchCache.has(key)) {
       const idx = this.stretchCacheOrder.indexOf(key)
       if (idx >= 0) this.stretchCacheOrder.splice(idx, 1)
@@ -314,9 +329,9 @@ export class StemPlayer {
     this.stretchCache.set(key, tracks)
     this.stretchCacheOrder.push(key)
 
-    while (this.stretchCacheOrder.length > StemPlayer.STRETCH_CACHE_MAX) {
+    while (this.stretchCacheOrder.length > this.stretchCacheMax) {
       const evictKey = this.stretchCacheOrder.shift()!
-      this.stretchCache.delete(evictKey)
+      this.evictStretchCacheEntry(evictKey)
     }
   }
 
@@ -339,6 +354,11 @@ export class StemPlayer {
 
     if (this.stretchGeneration !== generation) return false
 
+    // Drop references to the previous stretched set before allocating new buffers
+    if (this.tracks !== this.originalTracks) {
+      this.tracks = this.originalTracks
+    }
+
     cancelPendingStretchJobs()
 
     this.isStretching = true
@@ -351,6 +371,10 @@ export class StemPlayer {
       const processed: StemTrack[] = []
       for (let i = 0; i < this.originalTracks.length; i++) {
         if (this.stretchGeneration !== generation) return false
+
+        if (i > 0 && isLowMemoryDevice()) {
+          await new Promise(resolve => setTimeout(resolve, 50))
+        }
 
         let processedBuffer: AudioBuffer
         try {
@@ -392,6 +416,7 @@ export class StemPlayer {
       completed = true
       return true
     } finally {
+      terminateStretchWorker()
       if (completed || this.stretchGeneration === generation) {
         this.isStretching = false
         this.emitStretchingIdleIfReady()

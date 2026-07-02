@@ -27,6 +27,9 @@ export interface StemSessionMeta {
   /** User-saved loop presets for this stem session (synced via Drive) */
   presets?: import('./types').LoopPreset[]
 
+  /** Per-stem mixer settings (gain, mute, solo) for this session (synced via Drive) */
+  stemMix?: import('./types').StemMixState
+
   /**
    * AI-generated (or user-edited) timed lyrics + chords for this session.
    * This is the main data structure for the lyrics + chords feature.
@@ -379,6 +382,18 @@ export function updateStemSessionPresets(id: string, presets: import('./types').
   const idx = list.findIndex(m => m.id === id)
   if (idx >= 0) {
     list[idx] = { ...list[idx], presets: [...presets] }
+    writeMetaList(list)
+  }
+}
+
+/**
+ * Update the saved stem mixer state for an existing session (gain, mute, solo).
+ */
+export function updateStemSessionMix(id: string, stemMix: import('./types').StemMixState): void {
+  const list = readMetaList()
+  const idx = list.findIndex(m => m.id === id)
+  if (idx >= 0) {
+    list[idx] = { ...list[idx], stemMix: { ...stemMix } }
     writeMetaList(list)
   }
 }

@@ -650,6 +650,7 @@ export async function updateCloudStemMeta(
         model: updatedSession.model,
         presets: updatedSession.presets,
       }
+      if (updatedSession.stemMix) metaPayload.stemMix = updatedSession.stemMix
       if (updatedSession.lyricTrack) metaPayload.lyricTrack = updatedSession.lyricTrack
       const metaJson = JSON.stringify(metaPayload, null, 2)
       const existingMeta = await drive.findFileByName(token, 'meta.json', session.driveFolderId)

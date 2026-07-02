@@ -98,3 +98,12 @@ export interface LoopPreset {
   start: number
   end: number
 }
+
+/** Per-stem mixer settings (gain, mute, solo) persisted with a session. */
+export interface StemMixEntry {
+  gain: number
+  muted: boolean
+  soloed: boolean
+}
+
+export type StemMixState = Record<string, StemMixEntry>

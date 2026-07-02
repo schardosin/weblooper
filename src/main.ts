@@ -1813,7 +1813,8 @@ class WebLooper {
               model: session.model,
               youtubeVideoId: session.youtubeVideoId,
               youtubeVideoTitle: session.youtubeVideoTitle,
-              presets: session.presets,   // Carry saved loops/presets from cloud
+              presets: session.presets,
+              stemMix: session.stemMix,
             },
             stems,
             session.id,  // Preserve cloud ID so deduplication works
@@ -3352,6 +3353,7 @@ class WebLooper {
       playbackRate: number
       pitchSemitones?: number
       presets: LoopPreset[]
+      stemMix?: import('./stems/types').StemMixState
     }
 
     function loadStemState(): StemLoopState | null {
@@ -3382,6 +3384,12 @@ class WebLooper {
       presets = [...savedState.presets]
     }
 
+    // Restore stem mixer (volume / mute / solo) from session meta or local practice state
+    const savedStemMix = sessionMeta?.stemMix ?? savedState?.stemMix
+    if (savedStemMix && Object.keys(savedStemMix).length > 0) {
+      stemPlayer.applyStemMix(savedStemMix)
+    }
+
     this.updateStemSessionLoading('Restoring your settings…', 94)
 
     stemPlayer.setLoop(loopStart, loopEnd)
@@ -3394,7 +3402,35 @@ class WebLooper {
     this.updateStemSessionLoading('Building interface…', 98)
 
     function persistStemState() {
-      saveStemState({ start: loopStart, end: loopEnd, isLooping, playbackRate: currentRate, pitchSemitones: currentPitch, presets })
+      saveStemState({
+        start: loopStart,
+        end: loopEnd,
+        isLooping,
+        playbackRate: currentRate,
+        pitchSemitones: currentPitch,
+        presets,
+        stemMix: stemPlayer.getStemMix(),
+      })
+    }
+
+    let stemMixSaveTimer: ReturnType<typeof setTimeout> | null = null
+    function scheduleStemMixPersist() {
+      if (stemMixSaveTimer) clearTimeout(stemMixSaveTimer)
+      stemMixSaveTimer = setTimeout(() => {
+        stemMixSaveTimer = null
+        const stemMix = stemPlayer.getStemMix()
+        persistStemState()
+        if (sessionMeta?.id) {
+          import('./stems').then(({ updateStemSessionMix }) => {
+            updateStemSessionMix(sessionMeta.id, stemMix)
+            import('./drive').then(({ isSignedIn, isSessionInCloud, updateCloudStemMeta }) => {
+              if (isSignedIn() && isSessionInCloud(sessionMeta.id)) {
+                updateCloudStemMeta(sessionMeta.id, { stemMix }).catch(() => {})
+              }
+            })
+          })
+        }
+      }, 800)
     }
 
     // ---------- UI ----------
@@ -3938,7 +3974,7 @@ class WebLooper {
     // ---------- Mixer ----------
     const mixerC = document.getElementById('real-mixer-container')!
     const { createStemMixerUI } = await import('./stems')
-    createStemMixerUI({ container: mixerC, player: stemPlayer })
+    createStemMixerUI({ container: mixerC, player: stemPlayer, onMixChange: scheduleStemMixPersist })
 
     // ---------- Real Lyrics + Chords Panel (Phase 0 integration) ----------
     const lyricsContainer = document.getElementById('real-lyrics-panel')!

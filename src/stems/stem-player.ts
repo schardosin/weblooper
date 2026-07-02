@@ -594,6 +594,25 @@ export class StemPlayer {
     return Array.from(this.states.values())
   }
 
+  getStemMix(): Record<string, { gain: number; muted: boolean; soloed: boolean }> {
+    const mix: Record<string, { gain: number; muted: boolean; soloed: boolean }> = {}
+    for (const state of this.states.values()) {
+      mix[state.name] = { gain: state.gain, muted: state.muted, soloed: state.soloed }
+    }
+    return mix
+  }
+
+  applyStemMix(mix: Record<string, { gain: number; muted: boolean; soloed: boolean }>) {
+    for (const [name, entry] of Object.entries(mix)) {
+      const state = this.states.get(name)
+      if (!state) continue
+      state.gain = Math.max(0, Math.min(entry.gain, 2.5))
+      state.muted = entry.muted
+      state.soloed = entry.soloed
+    }
+    this.updateAllStemGains()
+  }
+
   resetMix() {
     this.states.forEach(s => {
       s.gain = 1.0

@@ -15,6 +15,7 @@ export {
   findStemSessionForYouTubeVideo,
   findStemSessionByYouTubeTitle,
   updateStemSessionPresets,
+  updateStemSessionMix,
   updateStemSessionLyricTrack,
   type StemSessionMeta,
 } from './persistence'

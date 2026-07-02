@@ -9,9 +9,11 @@ export interface MixerOptions {
   container: HTMLElement
   player: StemPlayer
   onClose?: () => void
+  /** Called after any mix change (fader, mute, solo, reset). Debounce in the caller. */
+  onMixChange?: () => void
 }
 
-export function createStemMixerUI({ container, player, onClose }: MixerOptions) {
+export function createStemMixerUI({ container, player, onClose, onMixChange }: MixerOptions) {
   container.innerHTML = `
     <div class="bg-zinc-900 border border-white/10 rounded-3xl p-5">
       <div class="flex items-center justify-between mb-4">
@@ -73,6 +75,7 @@ export function createStemMixerUI({ container, player, onClose }: MixerOptions) 
       const val = parseFloat(fader.value)
       player.setStemGain(state.name, val)
       valueLabel.textContent = val.toFixed(1) + '×'
+      onMixChange?.()
     })
 
     // Solo
@@ -80,6 +83,7 @@ export function createStemMixerUI({ container, player, onClose }: MixerOptions) 
       const newSolo = !soloBtn.classList.contains('bg-emerald-500')
       player.setStemSoloed(state.name, newSolo)
       updateRowVisuals()
+      onMixChange?.()
     })
 
     // Mute
@@ -87,6 +91,7 @@ export function createStemMixerUI({ container, player, onClose }: MixerOptions) 
       const newMuted = !muteBtn.classList.contains('bg-rose-500/80')
       player.setStemMuted(state.name, newMuted)
       updateRowVisuals()
+      onMixChange?.()
     })
 
     function updateRowVisuals() {
@@ -116,8 +121,9 @@ export function createStemMixerUI({ container, player, onClose }: MixerOptions) 
   // Reset button
   container.querySelector('#mixer-reset')?.addEventListener('click', () => {
     player.resetMix()
+    onMixChange?.()
     // Re-render the whole mixer for simplicity
-    createStemMixerUI({ container, player, onClose })
+    createStemMixerUI({ container, player, onClose, onMixChange })
   })
 
   container.querySelector('#mixer-close')?.addEventListener('click', () => {

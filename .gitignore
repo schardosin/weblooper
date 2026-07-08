@@ -12,6 +12,13 @@ dist
 dist-ssr
 *.local
 
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+cli/weblooper-stems/.venv/
+
 # Environment variables
 .env
 .env.*

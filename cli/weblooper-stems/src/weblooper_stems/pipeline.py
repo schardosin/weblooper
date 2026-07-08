@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import shlex
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 STEM_NAMES = ["drums", "bass", "guitar", "piano", "vocals", "other"]
@@ -23,6 +23,16 @@ def detect_device() -> str:
             return "mps (Apple Silicon)"
     except Exception:
         pass
+    return "cpu"
+
+
+def torch_device() -> str:
+    """Return torch device string: cuda | mps | cpu."""
+    label = detect_device()
+    if label.startswith("cuda"):
+        return "cuda"
+    if label.startswith("mps"):
+        return "mps"
     return "cpu"
 
 
@@ -94,41 +104,78 @@ def download_youtube_audio(youtube_url: str, out_dir: Path) -> tuple[Path, str, 
 
 def separate_stems(audio_path: Path, out_dir: Path, model: str = DEFAULT_MODEL) -> Path:
     """
-    Run Demucs htdemucs_6s (or given model). Returns directory containing stem WAVs.
+    Run Demucs (htdemucs_6s by default) and write stem WAVs with soundfile.
+
+    Avoids demucs.separate.main → torchaudio.save, which requires TorchCodec on
+    torchaudio 2.9+ and fails when torchcodec is missing.
     """
-    import demucs.separate
+    import numpy as np
+    import soundfile as sf
+    import torch
+    from demucs.apply import apply_model
+    from demucs.audio import convert_audio
+    from demucs.pretrained import get_model
 
     if out_dir.exists():
         shutil.rmtree(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    device = detect_device()
-    print(f"Running {model} stem separation on {device}…")
-    print("(First run may download model weights.)")
-    print()
-
-    # demucs.separate.main expects argv-style args
-    args = f'-n {model} --out "{out_dir}" "{audio_path}"'
-    demucs.separate.main(shlex.split(args))
 
     stem_dir = out_dir / model / audio_path.stem
-    if not stem_dir.is_dir():
-        model_dir = out_dir / model
-        if model_dir.is_dir():
-            sub = [p for p in model_dir.iterdir() if p.is_dir()]
-            if sub:
-                stem_dir = sub[0]
+    stem_dir.mkdir(parents=True, exist_ok=True)
 
-    if not stem_dir.is_dir():
-        raise FileNotFoundError(f"Demucs output not found under {out_dir}")
+    device = torch_device()
+    device_label = detect_device()
+    print(f"Running {model} stem separation on {device_label}…")
+    print("(First run may download model weights.)")
+    print("Saving stems via soundfile (no torchcodec required).")
+    print()
+
+    net = get_model(model)
+    net.eval()
+
+    # Load mix with soundfile only (never torchaudio.load/save)
+    data, sr = sf.read(str(audio_path), dtype="float32", always_2d=True)
+    # data: [T, C] → torch [C, T]
+    wav = torch.from_numpy(np.ascontiguousarray(data.T))
+
+    target_sr = getattr(net, "samplerate", 44100)
+    target_ch = getattr(net, "audio_channels", 2)
+    wav = convert_audio(wav, sr, target_sr, target_ch)
+
+    # Match demucs.separate normalization for stable levels
+    ref = wav.mean(0)
+    wav = (wav - ref.mean()) / (ref.std() + 1e-8)
+
+    t0 = time.time()
+    with torch.no_grad():
+        sources = apply_model(
+            net,
+            wav[None],
+            device=device,
+            progress=True,
+            num_workers=0,
+        )[0]
+    sources = sources * (ref.std() + 1e-8) + ref.mean()
+    elapsed = time.time() - t0
+    print(f"\nSeparation complete in {elapsed:.1f}s")
+
+    # sources: [S, C, T]
+    source_names = list(getattr(net, "sources", STEM_NAMES))
+    for i, name in enumerate(source_names):
+        stem = sources[i].detach().cpu().numpy()  # [C, T]
+        out = np.ascontiguousarray(stem.T)  # [T, C] for soundfile
+        # Clip lightly to valid float range
+        out = np.clip(out, -1.0, 1.0)
+        out_path = stem_dir / f"{name}.wav"
+        sf.write(str(out_path), out, target_sr, subtype="FLOAT")
+        size_mb = out_path.stat().st_size / (1024 * 1024)
+        print(f"  {name}.wav: {size_mb:.1f} MB")
 
     found = [p.name for p in stem_dir.glob("*.wav")]
-    print(f"Stems in {stem_dir}: {found}")
+    print(f"Stems written to {stem_dir}: {found}")
+
+    # Warn if expected 6-stem names missing
     for name in STEM_NAMES:
-        p = stem_dir / f"{name}.wav"
-        if p.exists():
-            print(f"  {name}.wav: {p.stat().st_size / (1024 * 1024):.1f} MB")
-        else:
+        if not (stem_dir / f"{name}.wav").exists():
             print(f"  WARNING: {name}.wav not found")
 
     return stem_dir
@@ -186,10 +233,8 @@ def run_pipeline(
             on_stage(name, progress)
         print(f"\n=== stage: {name} ({progress:.0%}) ===")
 
-    cleanup = False
     if work_dir is None:
         work_dir = Path(tempfile.mkdtemp(prefix="weblooper-stems-"))
-        cleanup = False  # keep for debugging; caller may delete
 
     work_dir = Path(work_dir)
     work_dir.mkdir(parents=True, exist_ok=True)

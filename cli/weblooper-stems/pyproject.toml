@@ -1,6 +1,6 @@
 [project]
 name = "weblooper-stems"
-version = "0.1.0"
+version = "0.1.1"
 description = "Local stem separation for weblooper — yt-dlp + Demucs + Google Drive upload"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -12,6 +12,7 @@ dependencies = [
   "demucs>=4.0.0",
   "torch",
   "torchaudio",
+  "soundfile>=0.12.1",
   "requests>=2.28.0",
   "imageio-ffmpeg>=0.4.9",
 ]

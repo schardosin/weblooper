@@ -7,7 +7,7 @@
  */
 
 /** Pin CLI version so site-generated commands stay compatible. */
-export const WEBLOOPER_STEMS_CLI_VERSION = '0.1.0'
+export const WEBLOOPER_STEMS_CLI_VERSION = '0.1.1'
 
 export const WEBLOOPER_STEMS_PACKAGE = 'weblooper-stems'
 

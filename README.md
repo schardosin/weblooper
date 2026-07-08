@@ -40,7 +40,32 @@ Open http://localhost:5173.
 2. Drag the timeline or press `[` and `]` to set your loop
 3. Press `L` to turn looping on
 4. Use the speed chips or keys `1`–`6` to slow it down
-5. (Optional) Click **Separate Stems** — a clean 6-stem model runs locally
+5. (Optional) Click **Separate Stems** and pick a method:
+   - **On this computer** (recommended) — copy one Terminal command (`uvx`); clean YouTube download + native Demucs on your CPU/GPU
+   - **Google Colab** — free cloud GPU notebook (no local install)
+   - **In browser** — WebGPU in the tab (tab audio capture; quality can vary)
+
+### Local stems with `uvx` (recommended for YouTube)
+
+No server costs — processing uses **your machine**, results land in **your Google Drive**, and the site auto-loads them.
+
+1. Install [uv](https://github.com/astral-sh/uv) once (if needed):
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+2. On weblooper: sign in with Google → load a video → **Separate Stems** → **On this computer**
+3. Click **Copy command** and paste it in Terminal (first run downloads PyTorch + Demucs models)
+4. Leave the tab open — when the CLI finishes, stems appear automatically
+
+The CLI package lives in [`cli/weblooper-stems`](cli/weblooper-stems). The site generates a command like:
+
+```bash
+uvx --from "git+https://github.com/schardosin/weblooper.git@main#subdirectory=cli/weblooper-stems" weblooper-stems run '<payload-from-site>'
+```
+
+(After PyPI publish you can use `uvx weblooper-stems@0.1.0 run …` instead.)
 
 ### Quick start (local audio + stems)
 
@@ -92,9 +117,10 @@ You can also drag the green timeline handles for precise visual control.
 
 - Vite + TypeScript + Tailwind CSS v4
 - YouTube IFrame Player API (no backend, no tracking)
-- 6-stem separation via **demucs-rs** (Rust + WebGPU/WASM) — fully client-side
+- 6-stem separation via **demucs-rs** (Rust + WebGPU/WASM) in the browser, or **native Demucs** via optional `weblooper-stems` CLI (`uvx`)
+- Local CLI + Google Colab hand off results through the user’s **Google Drive** (same poll/load path)
 - All state lives in `localStorage` + OPFS (Origin Private File System) for stems
-- Tab audio capture for YouTube stem separation (no server required)
+- Tab audio capture remains available as a browser-only YouTube path
 
 ---
 

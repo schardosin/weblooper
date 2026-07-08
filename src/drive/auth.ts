@@ -168,6 +168,14 @@ export function getAccessToken(): string | null {
 }
 
 /**
+ * Expiry timestamp (ms since epoch) for the current access token, or 0 if none.
+ * Used when building short-lived local-CLI job payloads.
+ */
+export function getTokenExpiry(): number {
+  return tokenExpiry
+}
+
+/**
  * Initiate Google sign-in. Opens the Google consent popup.
  * Returns the access token on success.
  */

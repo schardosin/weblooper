@@ -852,23 +852,32 @@ export async function downloadPitchRawAudio(videoId: string): Promise<ArrayBuffe
 }
 
 // =============================================================================
-// Colab Stem Separation
+// External Stem Separation (Colab / local CLI)
 // =============================================================================
 
+export type ExternalStemSource = 'colab' | 'local-cli'
+
 /**
- * Create a placeholder session folder in Drive for Colab stem separation.
- * Contains meta.json with the YouTube URL so the notebook knows what to download.
+ * Create a placeholder session folder in Drive for external stem separation
+ * (Google Colab notebook or local `uvx weblooper-stems` CLI).
+ *
+ * Pre-creates empty .webm placeholders so the external runner can update them
+ * while weblooper retains drive.file ownership/read access.
  * Returns the Drive folder ID.
  */
-export async function createStemColabSession(
+export async function createExternalStemSession(
   sessionId: string,
   youtubeVideoId: string,
   youtubeVideoTitle: string,
   duration: number,
+  options?: { source?: ExternalStemSource },
 ): Promise<string> {
   if (!isSignedIn()) {
     throw new Error('Please sign in to Google Drive first.')
   }
+
+  const source: ExternalStemSource = options?.source || 'colab'
+  const model = source === 'local-cli' ? 'local-htdemucs_6s' : 'colab-htdemucs_6s'
 
   const token = await getValidToken()
 
@@ -885,16 +894,18 @@ export async function createStemColabSession(
     youtubeUrl: `https://www.youtube.com/watch?v=${youtubeVideoId}`,
     duration,
     stemNames,
-    model: 'colab-htdemucs_6s',
+    model,
+    source,
     status: 'processing',
+    progress: 0,
+    stage: 'queued',
     createdAt: Date.now(),
   }
   await drive.uploadFile(token, 'meta.json', JSON.stringify(meta, null, 2), 'application/json', folderId)
 
   // Pre-create placeholder .webm files so weblooper retains ownership.
-  // Colab will overwrite these with real stem audio via files().update().
-  // Under drive.file scope, weblooper can only read files IT created —
-  // so these placeholders ensure the stems remain accessible after Colab fills them.
+  // External runners overwrite these via files().update() — not delete+create —
+  // so drive.file scope still allows the site to read the filled stems.
   const placeholder = new ArrayBuffer(0)
   for (const stem of stemNames) {
     await drive.uploadFile(token, `${stem}.webm`, placeholder, 'audio/webm', folderId)
@@ -910,14 +921,29 @@ export async function createStemColabSession(
     youtubeVideoTitle,
     duration,
     stemNames,
-    model: 'colab-htdemucs_6s',
+    model,
     createdAt: Date.now(),
     driveFolderId: folderId,
   } as CloudSession)
   await saveManifest(token)
 
-  console.log('[drive-sync] Created stem Colab session folder:', folderId)
+  console.log(`[drive-sync] Created external stem session (${source}):`, folderId)
   return folderId
+}
+
+/**
+ * @deprecated Prefer createExternalStemSession(..., { source: 'colab' })
+ * Create a placeholder session folder in Drive for Colab stem separation.
+ */
+export async function createStemColabSession(
+  sessionId: string,
+  youtubeVideoId: string,
+  youtubeVideoTitle: string,
+  duration: number,
+): Promise<string> {
+  return createExternalStemSession(sessionId, youtubeVideoId, youtubeVideoTitle, duration, {
+    source: 'colab',
+  })
 }
 
 /**
@@ -987,15 +1013,31 @@ export async function createStemColabNotebook(
   return fileId
 }
 
+export interface ExternalStemStatusReady {
+  stemNames: string[]
+  duration: number
+  model: string
+  processedAt: string
+  source?: string
+}
+
+export interface ExternalStemStatusProgress {
+  status: 'processing' | 'error' | 'queued'
+  progress?: number
+  stage?: string
+  error?: string
+  model?: string
+}
+
 /**
- * Check if the Colab stem separation has completed by reading meta.json
- * from the session folder. Returns the updated meta if ready (status: 'ready'
- * and processedAt after the given threshold), or null if still processing.
+ * Check external stem job status (Colab or local CLI) by reading meta.json.
+ * Returns ready meta when status is 'ready' and processedAt is after startedAfter;
+ * otherwise null (still processing / not ready).
  */
-export async function checkStemColabStatus(
+export async function checkExternalStemStatus(
   driveFolderId: string,
   startedAfter: string,
-): Promise<{ stemNames: string[]; duration: number; model: string; processedAt: string } | null> {
+): Promise<ExternalStemStatusReady | null> {
   if (!isSignedIn()) return null
 
   try {
@@ -1018,11 +1060,53 @@ export async function checkStemColabStatus(
       duration: meta.duration || 0,
       model: meta.model || 'unknown',
       processedAt: meta.processedAt,
+      source: meta.source,
     }
   } catch (err) {
-    console.debug('[drive-sync] checkStemColabStatus error:', err)
+    console.debug('[drive-sync] checkExternalStemStatus error:', err)
     return null
   }
+}
+
+/**
+ * Read in-progress (or error) meta for an external stem job — for UI progress.
+ */
+export async function getExternalStemProgress(
+  driveFolderId: string,
+): Promise<ExternalStemStatusProgress | null> {
+  if (!isSignedIn()) return null
+
+  try {
+    const token = await getValidToken()
+    const metaFiles = await drive.listFiles(token, `'${driveFolderId}' in parents and name = 'meta.json' and trashed = false`)
+    if (!metaFiles.length) return null
+
+    const metaTxt = await drive.downloadFileAsText(token, metaFiles[0].id)
+    const meta = JSON.parse(metaTxt)
+
+    if (meta.status === 'ready') return null
+
+    return {
+      status: meta.status === 'error' ? 'error' : meta.status === 'queued' ? 'queued' : 'processing',
+      progress: typeof meta.progress === 'number' ? meta.progress : undefined,
+      stage: typeof meta.stage === 'string' ? meta.stage : undefined,
+      error: typeof meta.error === 'string' ? meta.error : undefined,
+      model: meta.model,
+    }
+  } catch (err) {
+    console.debug('[drive-sync] getExternalStemProgress error:', err)
+    return null
+  }
+}
+
+/**
+ * @deprecated Prefer checkExternalStemStatus
+ */
+export async function checkStemColabStatus(
+  driveFolderId: string,
+  startedAfter: string,
+): Promise<ExternalStemStatusReady | null> {
+  return checkExternalStemStatus(driveFolderId, startedAfter)
 }
 
 /**

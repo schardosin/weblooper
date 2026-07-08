@@ -1,4 +1,4 @@
-export { signIn, signOut, isSignedIn, getAccessToken, onAuthChange, getValidToken, tryAutoLogin } from './auth'
+export { signIn, signOut, isSignedIn, getAccessToken, getTokenExpiry, onAuthChange, getValidToken, tryAutoLogin } from './auth'
 export {
   uploadStemSession,
   downloadStemSession,
@@ -8,9 +8,12 @@ export {
   updateCloudStemMeta,
   loadLyricTrackFromCloud,
   createColabNotebookForSession,
-  // Colab stem separation
+  // External stem separation (Colab / local CLI)
+  createExternalStemSession,
   createStemColabSession,
   createStemColabNotebook,
+  checkExternalStemStatus,
+  getExternalStemProgress,
   checkStemColabStatus,
   downloadStemFile,
   // Video state sync (cross-device recent videos + loop settings)

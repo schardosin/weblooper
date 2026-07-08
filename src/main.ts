@@ -995,7 +995,7 @@ class WebLooper {
 
       const videoId = this.currentVideoId
 
-      // Show choice dialog: Browser vs Colab
+      // Show choice dialog: Local computer / Colab / Browser
       const choice = await this.showStemMethodChoice()
       if (!choice) return // user cancelled
 
@@ -1014,14 +1014,20 @@ class WebLooper {
             alert(
               'Direct YouTube audio extraction failed (YouTube often blocks this).\n\n' +
               'Recommended reliable method:\n\n' +
-              '1. Download high-quality audio using yt-dlp:\n' +
-              '   yt-dlp -f bestaudio --extract-audio --audio-format opus "https://youtu.be/' + videoId + '"\n\n' +
-              '2. Then use "Load local audio file (for stems)" with the downloaded file.\n\n' +
-              'This gives much better results than browser-based extraction.'
+              '1. Use "On this computer" (uvx) — clean download + native Demucs, or\n' +
+              '2. Download with yt-dlp then "Load local audio file (for stems)".'
             )
           } else {
             alert(`Failed to separate stems from YouTube:\n\n${message}`)
           }
+        }
+      } else if (choice === 'local') {
+        try {
+          await this.startLocalCliStemSeparation(videoId)
+        } catch (err: any) {
+          document.querySelectorAll('#stem-choice-buttons')?.forEach(el => el.closest('.fixed')?.remove())
+          console.error('[weblooper] Local CLI stem separation failed', err)
+          alert(`Local stem separation setup failed:\n\n${err?.message || err}`)
         }
       } else {
         // Colab path
@@ -2261,10 +2267,10 @@ class WebLooper {
   }
 
   /**
-   * Show a choice dialog letting the user pick between browser-based and Colab-based
-   * stem separation. Returns 'browser' | 'colab' | null (cancelled).
+   * Show a choice dialog: local computer (uvx), Colab, or browser.
+   * Returns 'local' | 'browser' | 'colab' | null (cancelled).
    */
-  private showStemMethodChoice(): Promise<'browser' | 'colab' | null> {
+  private showStemMethodChoice(): Promise<'local' | 'browser' | 'colab' | null> {
     return new Promise((resolve) => {
       const overlay = document.createElement('div')
       overlay.className = 'fixed inset-0 bg-black/70 backdrop-blur z-[400] flex items-center justify-center p-6'
@@ -2273,13 +2279,17 @@ class WebLooper {
           <div class="text-lg font-semibold text-emerald-400 mb-3">Separate Stems</div>
           <div class="text-sm text-zinc-400 mb-5">Choose how to split this track into stems (drums, bass, guitar, piano, vocals, other):</div>
           <div id="stem-choice-buttons" class="space-y-3">
-            <button id="stem-choice-colab" class="w-full text-left px-4 py-3 rounded-2xl border border-blue-500/30 bg-blue-500/5 hover:border-blue-500/50 hover:bg-blue-500/10 transition-colors">
-              <div class="text-sm font-medium text-white flex items-center gap-2">In Google Colab (free GPU) <span class="text-[9px] px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-300 border border-blue-500/30 uppercase tracking-wide">Recommended</span></div>
-              <div class="text-xs text-zinc-400 mt-0.5">Opens a notebook on a free T4 GPU. ~2-4 min. No tab capture needed. Requires Google sign-in.</div>
+            <button id="stem-choice-local" class="w-full text-left px-4 py-3 rounded-2xl border border-emerald-500/40 bg-emerald-500/5 hover:border-emerald-500/60 hover:bg-emerald-500/10 transition-colors">
+              <div class="text-sm font-medium text-white flex items-center gap-2">On this computer <span class="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 uppercase tracking-wide">Recommended</span></div>
+              <div class="text-xs text-zinc-400 mt-0.5">Copy one Terminal command (<code class="text-zinc-300">uvx</code>). Clean YouTube download + native Demucs on your CPU/GPU. Requires Google sign-in.</div>
             </button>
-            <button id="stem-choice-browser" class="w-full text-left px-4 py-3 rounded-2xl border border-white/10 hover:border-emerald-500/50 hover:bg-emerald-500/5 transition-colors">
+            <button id="stem-choice-colab" class="w-full text-left px-4 py-3 rounded-2xl border border-blue-500/30 bg-blue-500/5 hover:border-blue-500/50 hover:bg-blue-500/10 transition-colors">
+              <div class="text-sm font-medium text-white">In Google Colab (free GPU)</div>
+              <div class="text-xs text-zinc-400 mt-0.5">Opens a notebook on a free T4 GPU. ~2-4 min. No local install. Requires Google sign-in.</div>
+            </button>
+            <button id="stem-choice-browser" class="w-full text-left px-4 py-3 rounded-2xl border border-white/10 hover:border-white/25 hover:bg-white/5 transition-colors">
               <div class="text-sm font-medium text-white">In Browser (WebGPU)</div>
-              <div class="text-xs text-zinc-400 mt-0.5">Uses your GPU via WebAssembly. ~3-5 min. Requires tab audio capture.</div>
+              <div class="text-xs text-zinc-400 mt-0.5">Uses your browser GPU via WASM. Requires tab audio capture — quality can vary.</div>
             </button>
           </div>
           <div class="mt-4 text-right">
@@ -2288,24 +2298,31 @@ class WebLooper {
         </div>
       `
 
-      const close = (result: 'browser' | 'colab' | null) => {
+      const close = (result: 'local' | 'browser' | 'colab' | null) => {
         overlay.remove()
         resolve(result)
       }
 
-      overlay.querySelector('#stem-choice-browser')!.addEventListener('click', () => close('browser'))
-      overlay.querySelector('#stem-choice-colab')!.addEventListener('click', () => {
-        // Show loading state immediately so user sees feedback
+      const showPreparing = (label: string) => {
         const buttonsEl = overlay.querySelector('#stem-choice-buttons')!
         buttonsEl.innerHTML = `
           <div class="flex items-center gap-3 py-4 px-2">
-            <div class="w-4 h-4 border-2 border-blue-400 border-t-transparent rounded-full animate-spin"></div>
-            <span class="text-sm text-zinc-300">Preparing Colab session (creating Drive folder + notebook)...</span>
+            <div class="w-4 h-4 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin"></div>
+            <span class="text-sm text-zinc-300">${label}</span>
           </div>
         `
-        // Hide cancel button during prep
         const cancelBtn = overlay.querySelector('#stem-choice-cancel') as HTMLElement
         if (cancelBtn) cancelBtn.style.display = 'none'
+      }
+
+      overlay.querySelector('#stem-choice-browser')!.addEventListener('click', () => close('browser'))
+      overlay.querySelector('#stem-choice-local')!.addEventListener('click', () => {
+        showPreparing('Preparing local job (Drive session + command)…')
+        // Keep overlay until startLocalCliStemSeparation replaces it
+        resolve('local')
+      })
+      overlay.querySelector('#stem-choice-colab')!.addEventListener('click', () => {
+        showPreparing('Preparing Colab session (creating Drive folder + notebook)…')
         // Resolve but keep overlay visible — startColabStemSeparation will remove it
         resolve('colab')
       })
@@ -2314,6 +2331,259 @@ class WebLooper {
 
       document.body.appendChild(overlay)
     })
+  }
+
+  /**
+   * Local CLI path: create Drive session, show copyable `uvx` command, poll for results.
+   * SSO stays on the site; the short-lived access token is embedded in the job payload.
+   */
+  private async startLocalCliStemSeparation(videoId: string) {
+    const { isSignedIn, signIn, getValidToken, getTokenExpiry } = await import('./drive')
+    if (!isSignedIn()) {
+      await signIn()
+      if (!isSignedIn()) {
+        throw new Error('Google sign-in is required for local stem separation (Drive handoff).')
+      }
+    }
+
+    const ytTitle = (this.els.videoTitle?.textContent || '').trim() || `YouTube ${videoId}`
+    const videoDuration = this.duration || this.player?.getDuration?.() || 0
+    const sessionId = `local-stems-${videoId}-${Date.now().toString(36)}`
+
+    const {
+      createExternalStemSession,
+      checkExternalStemStatus,
+      getExternalStemProgress,
+      downloadStemFile,
+    } = await import('./drive/sync')
+    const {
+      buildLocalCliJob,
+      formatUvxCommand,
+      formatUvxJobFileCommand,
+      downloadJobFile,
+      UV_INSTALL_COMMAND,
+      WEBLOOPER_STEMS_CLI_VERSION,
+    } = await import('./stems/local-cli')
+
+    const folderId = await createExternalStemSession(sessionId, videoId, ytTitle, videoDuration, {
+      source: 'local-cli',
+    })
+
+    // Fresh token after session create (may have refreshed during Drive calls)
+    const accessToken = await getValidToken()
+    const tokenExpiresAt = getTokenExpiry() || Date.now() + 50 * 60 * 1000
+
+    const job = buildLocalCliJob({
+      folderId,
+      sessionId,
+      youtubeVideoId: videoId,
+      title: ytTitle,
+      accessToken,
+      tokenExpiresAt,
+    })
+    const uvxCommand = formatUvxCommand(job)
+
+    const startedAt = new Date().toISOString()
+
+    // Remove the choice dialog
+    document.querySelectorAll('#stem-choice-buttons')?.forEach(el => el.closest('.fixed')?.remove())
+
+    const overlay = document.createElement('div')
+    overlay.className = 'fixed inset-0 bg-black/70 backdrop-blur z-[400] flex items-center justify-center p-6'
+    overlay.setAttribute('data-local-cli-stem-modal', 'true')
+    overlay.innerHTML = `
+      <div class="bg-zinc-900 border border-white/10 rounded-3xl p-6 max-w-xl w-full max-h-[90vh] overflow-y-auto">
+        <div class="text-lg font-semibold text-emerald-400 mb-2">Run on this computer</div>
+        <div class="text-sm text-zinc-400 mb-4">
+          One Terminal command downloads the audio, separates 6 stems with native Demucs, and uploads to your Drive.
+          Leave this tab open — results load automatically.
+        </div>
+
+        <div class="space-y-3 text-sm">
+          <div>
+            <div class="text-xs font-medium text-zinc-300 mb-1">1. Install <code class="text-emerald-400">uv</code> once (if needed)</div>
+            <pre class="text-[11px] bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-zinc-300 overflow-x-auto whitespace-pre-wrap">${UV_INSTALL_COMMAND}</pre>
+          </div>
+          <div>
+            <div class="text-xs font-medium text-zinc-300 mb-1">2. Paste this in Terminal and press Enter</div>
+            <pre id="local-cli-command" class="text-[10px] bg-black/40 border border-emerald-500/20 rounded-xl px-3 py-2 text-emerald-200/90 overflow-x-auto whitespace-pre-wrap break-all">${uvxCommand.replace(/</g, '&lt;')}</pre>
+            <div class="text-[10px] text-zinc-500 mt-1">Leading space helps keep the token out of shell history when <code class="text-zinc-400">HISTCONTROL=ignorespace</code> is set. Token expires in ~1 hour.</div>
+          </div>
+        </div>
+
+        <div class="mt-4 flex flex-wrap gap-2">
+          <button id="local-cli-copy-btn" class="px-4 py-2 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium">Copy command</button>
+          <button id="local-cli-job-file-btn" class="px-4 py-2 rounded-2xl border border-white/20 hover:bg-white/5 text-sm text-zinc-300">Download job file</button>
+          <button id="cancel-local-cli-stem-btn" class="px-4 py-2 rounded-2xl border border-white/20 hover:bg-white/5 text-sm text-zinc-300">Cancel</button>
+        </div>
+
+        <div id="local-cli-job-file-hint" class="hidden mt-3 text-[11px] text-zinc-400">
+          Job file saved. Then run:<br>
+          <code id="local-cli-job-file-cmd" class="text-emerald-300/90 text-[10px] break-all"></code>
+        </div>
+
+        <div class="flex items-center gap-2 mt-5 text-xs text-emerald-400">
+          <div class="w-2 h-2 bg-emerald-400 rounded-full animate-pulse"></div>
+          <span id="local-cli-poll-status">Waiting for the CLI to finish (polling Drive)…</span>
+        </div>
+        <div class="text-[10px] text-zinc-500 mt-2">
+          CLI <code class="text-zinc-400">weblooper-stems</code> v${WEBLOOPER_STEMS_CLI_VERSION}
+          (installed via <code class="text-zinc-400">uvx</code> from the weblooper repo)
+          · First run downloads PyTorch + Demucs models (can take a few minutes).
+          · Uses your machine’s GPU if available (CUDA / Apple MPS).
+        </div>
+      </div>
+    `
+    document.body.appendChild(overlay)
+
+    const copyBtn = overlay.querySelector('#local-cli-copy-btn') as HTMLButtonElement
+    copyBtn.addEventListener('click', async () => {
+      try {
+        // Leading space helps shells with HISTCONTROL=ignorespace skip history
+        await navigator.clipboard.writeText(uvxCommand)
+        copyBtn.textContent = 'Copied!'
+        setTimeout(() => { copyBtn.textContent = 'Copy command' }, 2000)
+      } catch {
+        // Fallback: select the pre text
+        const pre = overlay.querySelector('#local-cli-command')
+        if (pre) {
+          const range = document.createRange()
+          range.selectNodeContents(pre)
+          const sel = window.getSelection()
+          sel?.removeAllRanges()
+          sel?.addRange(range)
+        }
+        copyBtn.textContent = 'Select & copy (⌘C)'
+      }
+    })
+
+    overlay.querySelector('#local-cli-job-file-btn')!.addEventListener('click', () => {
+      const name = downloadJobFile(job)
+      const hint = overlay.querySelector('#local-cli-job-file-hint') as HTMLElement
+      const cmdEl = overlay.querySelector('#local-cli-job-file-cmd') as HTMLElement
+      hint.classList.remove('hidden')
+      const cmd = formatUvxJobFileCommand(name)
+      cmdEl.textContent = cmd
+      navigator.clipboard.writeText(cmd).catch(() => {})
+    })
+
+    let pollingInterval: ReturnType<typeof setInterval> | null = null
+    let pollingTimeout: ReturnType<typeof setTimeout> | null = null
+    const POLL_INTERVAL_MS = 10_000
+    // Local CPU can be slow on long tracks
+    const POLL_MAX_MS = 60 * 60_000
+
+    const stopPolling = () => {
+      if (pollingInterval) { clearInterval(pollingInterval); pollingInterval = null }
+      if (pollingTimeout) { clearTimeout(pollingTimeout); pollingTimeout = null }
+    }
+
+    const closeModal = () => {
+      stopPolling()
+      overlay.remove()
+    }
+
+    overlay.querySelector('#cancel-local-cli-stem-btn')!.addEventListener('click', closeModal)
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal() })
+
+    const pollStatusEl = () => overlay.querySelector('#local-cli-poll-status')
+
+    const pollForStems = async () => {
+      try {
+        // Surface CLI progress from meta.json when available
+        const progress = await getExternalStemProgress(folderId)
+        if (progress?.status === 'error') {
+          const el = pollStatusEl()
+          if (el) el.textContent = `CLI error: ${progress.error || 'unknown'}. Copy a fresh command and retry.`
+          return
+        }
+        if (progress && (progress.stage || progress.progress != null)) {
+          const pct = progress.progress != null ? ` ${Math.round(progress.progress * 100)}%` : ''
+          const stage = progress.stage || 'processing'
+          const el = pollStatusEl()
+          if (el) el.textContent = `CLI: ${stage}${pct}…`
+        }
+
+        const result = await checkExternalStemStatus(folderId, startedAt)
+        if (!result) return
+
+        stopPolling()
+        const el = pollStatusEl()
+        if (el) el.textContent = 'Stems ready! Downloading…'
+
+        const stemNames = result.stemNames
+        const audioCtx = new AudioContext({ sampleRate: 44100 })
+        const stems: Array<{ name: string; buffer: AudioBuffer }> = []
+
+        for (const name of stemNames) {
+          const data = await downloadStemFile(folderId, name)
+          if (!data) {
+            console.warn(`[local-cli-stems] Could not download ${name}.webm`)
+            continue
+          }
+          const decoded = await audioCtx.decodeAudioData(data)
+          stems.push({ name, buffer: decoded })
+        }
+        audioCtx.close()
+
+        if (stems.length === 0) {
+          closeModal()
+          alert('Local CLI finished but no stem files could be downloaded.')
+          return
+        }
+
+        closeModal()
+
+        this.els.playerSection.classList.add('hidden')
+        this.els.loaderSection.classList.add('hidden')
+
+        const modelLabel = result.model || 'local-htdemucs_6s'
+        const { saveStemSession } = await import('./stems')
+        await saveStemSession(
+          {
+            youtubeVideoId: videoId,
+            youtubeVideoTitle: ytTitle,
+            fileName: `YouTube — ${ytTitle}`,
+            duration: videoDuration || stems[0]!.buffer.duration,
+            stemNames: stems.map(s => s.name),
+            model: modelLabel,
+          },
+          stems,
+          sessionId,
+        )
+
+        try {
+          const { updateCloudStemMeta } = await import('./drive')
+          await updateCloudStemMeta(sessionId, { stemNames: stems.map(s => s.name) })
+        } catch {}
+
+        this.enterStemPracticeWithRealStems(
+          { fileName: `YouTube — ${ytTitle}`, duration: videoDuration || stems[0]!.buffer.duration },
+          stems,
+          {
+            id: sessionId,
+            fileName: `YouTube — ${ytTitle}`,
+            duration: videoDuration || stems[0]!.buffer.duration,
+            stemNames: stems.map(s => s.name),
+            model: modelLabel,
+            createdAt: Date.now(),
+            youtubeVideoId: videoId,
+            youtubeVideoTitle: ytTitle,
+          },
+        )
+      } catch (err) {
+        console.debug('[local-cli-stems poll] Error:', err)
+      }
+    }
+
+    pollingInterval = setInterval(pollForStems, POLL_INTERVAL_MS)
+    // First poll after a short delay so meta progress can appear
+    setTimeout(pollForStems, 3_000)
+    pollingTimeout = setTimeout(() => {
+      stopPolling()
+      const el = pollStatusEl()
+      if (el) el.textContent = 'Still waiting (1h). If the CLI finished, try Load from Drive. Token may have expired — copy a fresh command.'
+    }, POLL_MAX_MS)
   }
 
   /**

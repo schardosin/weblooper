@@ -20,5 +20,19 @@ export {
   type StemSessionMeta,
 } from './persistence'
 
+// Local CLI (uvx) job helpers — Drive handoff for native Demucs on the user's machine
+export {
+  WEBLOOPER_STEMS_CLI_VERSION,
+  WEBLOOPER_STEMS_PACKAGE,
+  buildLocalCliJob,
+  encodeJobPayload,
+  formatUvxCommand,
+  formatUvxJobFileCommand,
+  downloadJobFile,
+  jobFileName,
+  UV_INSTALL_COMMAND,
+  type LocalCliJobPayload,
+} from './local-cli'
+
 // Note: demucs-web 4-stem adapter has been fully removed per user request.
 // 6-stem via demucs-rs (guitar + piano) is now the exclusive path.

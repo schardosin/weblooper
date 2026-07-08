@@ -1,0 +1,30 @@
+[project]
+name = "weblooper-stems"
+version = "0.1.0"
+description = "Local stem separation for weblooper — yt-dlp + Demucs + Google Drive upload"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "weblooper" }]
+keywords = ["weblooper", "demucs", "stems", "yt-dlp", "music"]
+dependencies = [
+  "yt-dlp>=2024.1.0",
+  "demucs>=4.0.0",
+  "torch",
+  "torchaudio",
+  "requests>=2.28.0",
+  "imageio-ffmpeg>=0.4.9",
+]
+
+[project.scripts]
+weblooper-stems = "weblooper_stems.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/schardosin/weblooper"
+Documentation = "https://schardosin.github.io/weblooper/"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# hatchling discovers packages under src/ automatically

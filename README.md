@@ -49,23 +49,25 @@ Open http://localhost:5173.
 
 No server costs — processing uses **your machine**, results land in **your Google Drive**, and the site auto-loads them.
 
-1. Install [uv](https://github.com/astral-sh/uv) once (if needed):
+**Only host prerequisite:** [uv](https://docs.astral.sh/uv/) (`uvx`). Python packages (PyTorch, Demucs, yt-dlp, …) install into an **isolated** cache — nothing needs to be installed system-wide. Works on **macOS, Windows, and Linux**.
+
+1. Install uv once (if needed):
 
 ```bash
+# macOS / Linux
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-2. On weblooper: sign in with Google → load a video → **Separate Stems** → **On this computer**
-3. Click **Copy command** and paste it in Terminal (first run downloads PyTorch + Demucs models)
-4. Leave the tab open — when the CLI finishes, stems appear automatically
-
-The CLI package lives in [`cli/weblooper-stems`](cli/weblooper-stems). The site generates a command like:
-
-```bash
-uvx --from "git+https://github.com/schardosin/weblooper.git@main#subdirectory=cli/weblooper-stems" weblooper-stems run '<payload-from-site>'
+```powershell
+# Windows (PowerShell)
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
-(After PyPI publish you can use `uvx weblooper-stems@0.1.0 run …` instead.)
+2. On weblooper: sign in with Google → load a video → **Separate Stems** → **On this computer**
+3. Follow the OS-specific panel (copy command, or on Windows prefer **Download job file**)
+4. Leave the tab open — when the CLI finishes, stems appear automatically
+
+The CLI package lives in [`cli/weblooper-stems`](cli/weblooper-stems). See [`docs/local-cli-stems.md`](docs/local-cli-stems.md) for details.
 
 ### Quick start (local audio + stems)
 

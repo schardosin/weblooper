@@ -2361,7 +2361,9 @@ class WebLooper {
       formatUvxCommand,
       formatUvxJobFileCommand,
       downloadJobFile,
-      UV_INSTALL_COMMAND,
+      jobFileName,
+      detectHostOs,
+      getLocalCliUiCopy,
       WEBLOOPER_STEMS_CLI_VERSION,
     } = await import('./stems/local-cli')
 
@@ -2381,39 +2383,48 @@ class WebLooper {
       accessToken,
       tokenExpiresAt,
     })
-    const uvxCommand = formatUvxCommand(job)
+
+    const hostOs = detectHostOs()
+    const uiCopy = getLocalCliUiCopy(hostOs)
+    const uvxCommand = formatUvxCommand(job, hostOs)
 
     const startedAt = new Date().toISOString()
 
     // Remove the choice dialog
     document.querySelectorAll('#stem-choice-buttons')?.forEach(el => el.closest('.fixed')?.remove())
 
+    const primaryJobFile = uiCopy.preferJobFile
+    const copyPrimaryLabel = primaryJobFile ? 'Download job file' : 'Copy command'
+    const copySecondaryLabel = primaryJobFile ? 'Copy one-liner' : 'Download job file'
+
     const overlay = document.createElement('div')
     overlay.className = 'fixed inset-0 bg-black/70 backdrop-blur z-[400] flex items-center justify-center p-6'
     overlay.setAttribute('data-local-cli-stem-modal', 'true')
     overlay.innerHTML = `
       <div class="bg-zinc-900 border border-white/10 rounded-3xl p-6 max-w-xl w-full max-h-[90vh] overflow-y-auto">
-        <div class="text-lg font-semibold text-emerald-400 mb-2">Run on this computer</div>
+        <div class="text-lg font-semibold text-emerald-400 mb-1">Run on this computer</div>
+        <div class="text-[11px] text-zinc-500 mb-3">Detected: <span class="text-zinc-300">${uiCopy.osLabel}</span> · only host tool needed: <code class="text-emerald-400">uv</code></div>
         <div class="text-sm text-zinc-400 mb-4">
-          One Terminal command downloads the audio, separates 6 stems with native Demucs, and uploads to your Drive.
+          A single ${uiCopy.runShell} command downloads the audio, separates 6 stems with native Demucs, and uploads to your Drive.
           Leave this tab open — results load automatically.
         </div>
 
         <div class="space-y-3 text-sm">
           <div>
-            <div class="text-xs font-medium text-zinc-300 mb-1">1. Install <code class="text-emerald-400">uv</code> once (if needed)</div>
-            <pre class="text-[11px] bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-zinc-300 overflow-x-auto whitespace-pre-wrap">${UV_INSTALL_COMMAND}</pre>
+            <div class="text-xs font-medium text-zinc-300 mb-1">1. Install <code class="text-emerald-400">uv</code> once in ${uiCopy.installShell} (if needed)</div>
+            <pre class="text-[11px] bg-black/40 border border-white/10 rounded-xl px-3 py-2 text-zinc-300 overflow-x-auto whitespace-pre-wrap">${uiCopy.installCommand.replace(/</g, '&lt;')}</pre>
+            ${hostOs === 'windows' ? '<div class="text-[10px] text-zinc-500 mt-1">Then open a <strong class="text-zinc-400">new</strong> PowerShell window so <code class="text-zinc-400">uvx</code> is on PATH.</div>' : ''}
           </div>
           <div>
-            <div class="text-xs font-medium text-zinc-300 mb-1">2. Paste this in Terminal and press Enter</div>
-            <pre id="local-cli-command" class="text-[10px] bg-black/40 border border-emerald-500/20 rounded-xl px-3 py-2 text-emerald-200/90 overflow-x-auto whitespace-pre-wrap break-all">${uvxCommand.replace(/</g, '&lt;')}</pre>
-            <div class="text-[10px] text-zinc-500 mt-1">Leading space helps keep the token out of shell history when <code class="text-zinc-400">HISTCONTROL=ignorespace</code> is set. Token expires in ~1 hour.</div>
+            <div class="text-xs font-medium text-zinc-300 mb-1">2. ${primaryJobFile ? 'Download the job file, then run this in PowerShell' : `Paste this in ${uiCopy.runShell} and press Enter`}</div>
+            <pre id="local-cli-command" class="text-[10px] bg-black/40 border border-emerald-500/20 rounded-xl px-3 py-2 text-emerald-200/90 overflow-x-auto whitespace-pre-wrap break-all">${(primaryJobFile ? formatUvxJobFileCommand(jobFileName(sessionId), hostOs) : uvxCommand).replace(/</g, '&lt;')}</pre>
+            <div class="text-[10px] text-zinc-500 mt-1">${uiCopy.commandHint}</div>
           </div>
         </div>
 
         <div class="mt-4 flex flex-wrap gap-2">
-          <button id="local-cli-copy-btn" class="px-4 py-2 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium">Copy command</button>
-          <button id="local-cli-job-file-btn" class="px-4 py-2 rounded-2xl border border-white/20 hover:bg-white/5 text-sm text-zinc-300">Download job file</button>
+          <button id="local-cli-primary-btn" class="px-4 py-2 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium">${copyPrimaryLabel}</button>
+          <button id="local-cli-secondary-btn" class="px-4 py-2 rounded-2xl border border-white/20 hover:bg-white/5 text-sm text-zinc-300">${copySecondaryLabel}</button>
           <button id="cancel-local-cli-stem-btn" class="px-4 py-2 rounded-2xl border border-white/20 hover:bg-white/5 text-sm text-zinc-300">Cancel</button>
         </div>
 
@@ -2428,23 +2439,30 @@ class WebLooper {
         </div>
         <div class="text-[10px] text-zinc-500 mt-2">
           CLI <code class="text-zinc-400">weblooper-stems</code> v${WEBLOOPER_STEMS_CLI_VERSION}
-          (installed via <code class="text-zinc-400">uvx</code> from the weblooper repo)
-          · First run downloads PyTorch + Demucs models (can take a few minutes).
-          · Uses your machine’s GPU if available (CUDA / Apple MPS).
+          · ${uiCopy.footerNote}
         </div>
       </div>
     `
     document.body.appendChild(overlay)
 
-    const copyBtn = overlay.querySelector('#local-cli-copy-btn') as HTMLButtonElement
-    copyBtn.addEventListener('click', async () => {
+    const showJobFileHint = (name: string) => {
+      const hint = overlay.querySelector('#local-cli-job-file-hint') as HTMLElement
+      const cmdEl = overlay.querySelector('#local-cli-job-file-cmd') as HTMLElement
+      const cmd = formatUvxJobFileCommand(name, hostOs)
+      hint.classList.remove('hidden')
+      cmdEl.textContent = cmd
+      const pre = overlay.querySelector('#local-cli-command')
+      if (pre) pre.textContent = cmd
+      return cmd
+    }
+
+    const copyText = async (text: string, btn: HTMLButtonElement, doneLabel: string) => {
+      const original = btn.textContent || doneLabel
       try {
-        // Leading space helps shells with HISTCONTROL=ignorespace skip history
-        await navigator.clipboard.writeText(uvxCommand)
-        copyBtn.textContent = 'Copied!'
-        setTimeout(() => { copyBtn.textContent = 'Copy command' }, 2000)
+        await navigator.clipboard.writeText(text)
+        btn.textContent = 'Copied!'
+        setTimeout(() => { btn.textContent = original }, 2000)
       } catch {
-        // Fallback: select the pre text
         const pre = overlay.querySelector('#local-cli-command')
         if (pre) {
           const range = document.createRange()
@@ -2453,18 +2471,32 @@ class WebLooper {
           sel?.removeAllRanges()
           sel?.addRange(range)
         }
-        copyBtn.textContent = 'Select & copy (⌘C)'
+        btn.textContent = 'Select & copy'
       }
-    })
+    }
 
-    overlay.querySelector('#local-cli-job-file-btn')!.addEventListener('click', () => {
+    const doDownloadJob = async (btn: HTMLButtonElement) => {
       const name = downloadJobFile(job)
-      const hint = overlay.querySelector('#local-cli-job-file-hint') as HTMLElement
-      const cmdEl = overlay.querySelector('#local-cli-job-file-cmd') as HTMLElement
-      hint.classList.remove('hidden')
-      const cmd = formatUvxJobFileCommand(name)
-      cmdEl.textContent = cmd
-      navigator.clipboard.writeText(cmd).catch(() => {})
+      const cmd = showJobFileHint(name)
+      await copyText(cmd, btn, btn.textContent || 'Download job file')
+    }
+
+    const doCopyOneLiner = async (btn: HTMLButtonElement) => {
+      const pre = overlay.querySelector('#local-cli-command')
+      if (pre) pre.textContent = uvxCommand
+      await copyText(uvxCommand, btn, btn.textContent || 'Copy command')
+    }
+
+    const primaryBtn = overlay.querySelector('#local-cli-primary-btn') as HTMLButtonElement
+    const secondaryBtn = overlay.querySelector('#local-cli-secondary-btn') as HTMLButtonElement
+
+    primaryBtn.addEventListener('click', async () => {
+      if (primaryJobFile) await doDownloadJob(primaryBtn)
+      else await doCopyOneLiner(primaryBtn)
+    })
+    secondaryBtn.addEventListener('click', async () => {
+      if (primaryJobFile) await doCopyOneLiner(secondaryBtn)
+      else await doDownloadJob(secondaryBtn)
     })
 
     let pollingInterval: ReturnType<typeof setInterval> | null = null

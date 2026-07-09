@@ -24,14 +24,19 @@ export {
 export {
   WEBLOOPER_STEMS_CLI_VERSION,
   WEBLOOPER_STEMS_PACKAGE,
+  WEBLOOPER_STEMS_UVX_FROM,
   buildLocalCliJob,
   encodeJobPayload,
   formatUvxCommand,
   formatUvxJobFileCommand,
   downloadJobFile,
   jobFileName,
+  detectHostOs,
+  getUvInstallCommand,
+  getLocalCliUiCopy,
   UV_INSTALL_COMMAND,
   type LocalCliJobPayload,
+  type HostOs,
 } from './local-cli'
 
 // Note: demucs-web 4-stem adapter has been fully removed per user request.

@@ -4,6 +4,9 @@
  * The static site creates a Drive session (SSO already done), then hands the user
  * a single `uvx weblooper-stems run …` command. The CLI downloads YouTube audio,
  * runs native Demucs, and updates the Drive placeholders. The site polls as with Colab.
+ *
+ * Only host prerequisite: `uv` / `uvx`. Python deps install into an isolated cache.
+ * Commands are OS-aware (macOS / Linux / Windows PowerShell).
  */
 
 /** Pin CLI version so site-generated commands stay compatible. */
@@ -15,6 +18,8 @@ export const WEBLOOPER_STEMS_PACKAGE = 'weblooper-stems'
  * Install source for `uvx --from …`.
  * Uses the monorepo until the package is published to PyPI.
  * Switch to plain `weblooper-stems@VERSION` after `uv publish`.
+ *
+ * Note: git+ requires Git on PATH (including Git for Windows). After PyPI publish this goes away.
  */
 export const WEBLOOPER_STEMS_UVX_FROM =
   'git+https://github.com/schardosin/weblooper.git@main#subdirectory=cli/weblooper-stems'
@@ -22,6 +27,8 @@ export const WEBLOOPER_STEMS_UVX_FROM =
 export const LOCAL_CLI_PAYLOAD_VERSION = 1
 
 export const SIX_STEM_NAMES = ['drums', 'bass', 'guitar', 'piano', 'vocals', 'other'] as const
+
+export type HostOs = 'macos' | 'windows' | 'linux' | 'unknown'
 
 export interface LocalCliJobPayload {
   v: number
@@ -84,21 +91,101 @@ export function decodeJobPayload(encoded: string): LocalCliJobPayload {
   return JSON.parse(new TextDecoder().decode(bytes)) as LocalCliJobPayload
 }
 
-/**
- * Full one-liner for Terminal.
- * Leading space helps shells with HISTCONTROL=ignorespace skip history.
- */
-export function formatUvxCommand(job: LocalCliJobPayload): string {
-  const payload = encodeJobPayload(job)
-  return ` uvx --from "${WEBLOOPER_STEMS_UVX_FROM}" ${WEBLOOPER_STEMS_PACKAGE} run '${payload}'`
+/** Best-effort OS detection from the browser (for install + command wording). */
+export function detectHostOs(): HostOs {
+  const nav = typeof navigator !== 'undefined' ? navigator : null
+  if (!nav) return 'unknown'
+
+  // Prefer User-Agent Client Hints when available
+  const uaData = (nav as Navigator & { userAgentData?: { platform?: string } }).userAgentData
+  const platformHint = (uaData?.platform || nav.platform || '').toLowerCase()
+  const ua = (nav.userAgent || '').toLowerCase()
+
+  if (platformHint.includes('win') || ua.includes('windows')) return 'windows'
+  if (platformHint.includes('mac') || ua.includes('mac os') || ua.includes('macintosh')) return 'macos'
+  if (
+    platformHint.includes('linux') ||
+    platformHint.includes('chrome os') ||
+    ua.includes('linux') ||
+    ua.includes('cros')
+  ) {
+    return 'linux'
+  }
+  return 'unknown'
 }
 
-/** Shorter command when the user downloaded a job JSON file. */
-export function formatUvxJobFileCommand(fileName: string): string {
-  const path = fileName.includes('/') || fileName.startsWith('~')
-    ? fileName
-    : `~/Downloads/${fileName}`
-  return ` uvx --from "${WEBLOOPER_STEMS_UVX_FROM}" ${WEBLOOPER_STEMS_PACKAGE} run ${path}`
+export function hostOsLabel(os: HostOs = detectHostOs()): string {
+  switch (os) {
+    case 'macos':
+      return 'macOS'
+    case 'windows':
+      return 'Windows'
+    case 'linux':
+      return 'Linux'
+    default:
+      return 'your OS'
+  }
+}
+
+/** One-time uv install command for the detected (or given) OS. */
+export function getUvInstallCommand(os: HostOs = detectHostOs()): string {
+  if (os === 'windows') {
+    return 'powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"'
+  }
+  // macOS + Linux + unknown (curl is the official non-Windows path)
+  return 'curl -LsSf https://astral.sh/uv/install.sh | sh'
+}
+
+/** @deprecated Use getUvInstallCommand() — kept for older imports. */
+export const UV_INSTALL_COMMAND = getUvInstallCommand('macos')
+
+function uvxFromPrefix(): string {
+  return `uvx --from "${WEBLOOPER_STEMS_UVX_FROM}" ${WEBLOOPER_STEMS_PACKAGE}`
+}
+
+/**
+ * Full one-liner for Terminal / PowerShell.
+ * - Unix: leading space helps HISTCONTROL=ignorespace; single-quoted payload
+ * - Windows PowerShell: single-quoted payload (literal); no leading space needed
+ */
+export function formatUvxCommand(
+  job: LocalCliJobPayload,
+  os: HostOs = detectHostOs(),
+): string {
+  const payload = encodeJobPayload(job)
+  const core = `${uvxFromPrefix()} run`
+  if (os === 'windows') {
+    // PowerShell: single quotes = literal string (safe for base64url payload)
+    return `${core} '${payload}'`
+  }
+  // bash/zsh: leading space for history ignore when HISTCONTROL=ignorespace
+  return ` ${core} '${payload}'`
+}
+
+/** Path hint for a downloaded job file on the given OS. */
+export function jobFilePathHint(fileName: string, os: HostOs = detectHostOs()): string {
+  if (
+    fileName.includes('/') ||
+    fileName.includes('\\') ||
+    fileName.startsWith('~') ||
+    fileName.startsWith('$')
+  ) {
+    return fileName
+  }
+  if (os === 'windows') {
+    return `$env:USERPROFILE\\Downloads\\${fileName}`
+  }
+  return `~/Downloads/${fileName}`
+}
+
+/** Command when the user downloaded a job JSON file. */
+export function formatUvxJobFileCommand(
+  fileName: string,
+  os: HostOs = detectHostOs(),
+): string {
+  const path = jobFilePathHint(fileName, os)
+  const core = `${uvxFromPrefix()} run ${path}`
+  return os === 'windows' ? core : ` ${core}`
 }
 
 export function jobFileName(sessionId: string): string {
@@ -122,5 +209,57 @@ export function downloadJobFile(job: LocalCliJobPayload): string {
   return name
 }
 
-export const UV_INSTALL_COMMAND =
-  'curl -LsSf https://astral.sh/uv/install.sh | sh'
+/** Copy for the local-CLI modal: steps, notes, primary CTA preference. */
+export function getLocalCliUiCopy(os: HostOs = detectHostOs()): {
+  os: HostOs
+  osLabel: string
+  installCommand: string
+  installShell: string
+  runShell: string
+  preferJobFile: boolean
+  commandHint: string
+  footerNote: string
+} {
+  const osLabel = hostOsLabel(os)
+  if (os === 'windows') {
+    return {
+      os,
+      osLabel,
+      installCommand: getUvInstallCommand('windows'),
+      installShell: 'PowerShell',
+      runShell: 'PowerShell',
+      preferJobFile: true,
+      commandHint:
+        'Use PowerShell (not cmd.exe). Prefer “Download job file” if the one-liner is awkward. After installing uv, open a new terminal. Requires Git for Windows on PATH until the package is on PyPI. Token expires in ~1 hour.',
+      footerNote:
+        'Isolated install via uvx — only host tool needed is uv. First run downloads PyTorch + Demucs (large). Windows uses CPU by default (CUDA is optional/advanced).',
+    }
+  }
+  if (os === 'macos') {
+    return {
+      os,
+      osLabel,
+      installCommand: getUvInstallCommand('macos'),
+      installShell: 'Terminal',
+      runShell: 'Terminal',
+      preferJobFile: false,
+      commandHint:
+        'Leading space helps keep the token out of shell history when HISTCONTROL=ignorespace is set. Token expires in ~1 hour. Git is required for the git+ install source.',
+      footerNote:
+        'Isolated install via uvx — only host tool needed is uv. First run downloads PyTorch + Demucs. Uses Apple MPS when available.',
+    }
+  }
+  // linux / unknown
+  return {
+    os,
+    osLabel,
+    installCommand: getUvInstallCommand('linux'),
+    installShell: 'Terminal',
+    runShell: 'Terminal',
+    preferJobFile: false,
+    commandHint:
+      'Leading space helps keep the token out of shell history when HISTCONTROL=ignorespace is set. Token expires in ~1 hour. Git is required for the git+ install source.',
+    footerNote:
+      'Isolated install via uvx — only host tool needed is uv. First run downloads PyTorch + Demucs. Uses CUDA if a CUDA build of torch is present; otherwise CPU.',
+  }
+}

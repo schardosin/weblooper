@@ -594,12 +594,17 @@ class WebLooper {
         <!-- Workspace Header — minimal, focused -->
         <header class="border-b border-white/10 bg-[#0a0a0b]/95 backdrop-blur-xl sticky top-0 z-[200]">
           <div class="max-w-[1280px] mx-auto px-6 h-14 flex items-center justify-between">
-            <!-- Left: Back + Logo -->
+            <!-- Left: Home + Logo -->
             <div class="flex items-center gap-4">
-              <button id="workspace-back-btn"
-                      class="flex items-center gap-2 text-sm text-zinc-400 hover:text-white transition">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M19 12H5M12 19l-7-7 7-7"/>
+              <button id="workspace-home-btn"
+                      type="button"
+                      class="flex items-center gap-2 text-sm text-zinc-400 hover:text-white transition"
+                      title="Go to home page"
+                      aria-label="Home">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M3 10.5L12 3l9 7.5"/>
+                  <path d="M5 9.5V21h14V9.5"/>
+                  <path d="M9 21v-6h6v6"/>
                 </svg>
                 <span class="hidden sm:inline">Home</span>
               </button>
@@ -897,8 +902,8 @@ class WebLooper {
     // Hide the stems button until a video is loaded
     this.els.separateStemsFromYtBtn.classList.add('hidden')
 
-    // Wire workspace back button
-    document.getElementById('workspace-back-btn')?.addEventListener('click', () => {
+    // Wire workspace home button (not "back" — goes to landing, not browser history)
+    document.getElementById('workspace-home-btn')?.addEventListener('click', () => {
       // Hard navigation to landing — guarantees all audio/iframes are killed
       window.location.href = window.location.pathname
     })

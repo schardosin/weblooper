@@ -319,6 +319,22 @@ class WebLooper {
     }
   }
 
+  /**
+   * Return to a clean workspace (loader / recent list).
+   * Used by the header "Workspace" title — not the Home button (which goes to landing).
+   * Hard navigation so YouTube + stem audio are fully torn down (same reliability as Home).
+   */
+  private returnToWorkspaceHome() {
+    const target = window.location.pathname + window.location.search + '#/workspace'
+    // If we are already on workspace, setting the same URL may not reload — force reload.
+    if (this.currentView === 'workspace') {
+      window.location.hash = '#/workspace'
+      window.location.reload()
+      return
+    }
+    window.location.href = target
+  }
+
   private navigateToLanding() {
     if (this.currentView === 'landing') {
       this.renderLanding()
@@ -609,17 +625,21 @@ class WebLooper {
                 <span class="hidden sm:inline">Home</span>
               </button>
               <div class="h-5 w-px bg-white/10"></div>
-              <div class="flex items-center gap-2">
-                <div class="w-7 h-7 rounded-xl bg-emerald-500 flex items-center justify-center">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#052e16" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round">
+              <button id="workspace-title-btn"
+                      type="button"
+                      class="flex items-center gap-2 rounded-xl px-1.5 py-1 -mx-1.5 hover:bg-white/5 transition text-left"
+                      title="Back to workspace"
+                      aria-label="Workspace">
+                <div class="w-7 h-7 rounded-xl bg-emerald-500 flex items-center justify-center shrink-0">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#052e16" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                     <path d="M17 2l4 4-4 4"/>
                     <path d="M3 11v-1a4 4 0 014-4h14"/>
                     <path d="M7 22l-4-4 4-4"/>
                     <path d="M21 13v1a4 4 0 01-4 4H3"/>
                   </svg>
                 </div>
-                <span class="font-semibold tracking-tight text-lg">Workspace</span>
-              </div>
+                <span class="font-semibold tracking-tight text-lg text-zinc-100">Workspace</span>
+              </button>
             </div>
 
             <!-- Right: Cloud sync + Shortcuts -->
@@ -906,6 +926,11 @@ class WebLooper {
     document.getElementById('workspace-home-btn')?.addEventListener('click', () => {
       // Hard navigation to landing — guarantees all audio/iframes are killed
       window.location.href = window.location.pathname
+    })
+
+    // Workspace logo/title → return to clean workspace (exit video/stems back to loader)
+    document.getElementById('workspace-title-btn')?.addEventListener('click', () => {
+      this.returnToWorkspaceHome()
     })
 
     // Wire Google Drive sync button

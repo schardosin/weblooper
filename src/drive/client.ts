@@ -325,15 +325,42 @@ export async function updateFile(
 
 /**
  * Delete a file or folder by ID.
+ * 404 is treated as success (already gone).
  */
 export async function deleteFile(token: string, fileId: string): Promise<void> {
-  const res = await fetch(`${DRIVE_API}/files/${fileId}`, {
-    method: 'DELETE',
-    headers: { Authorization: `Bearer ${token}` },
-  })
+  const result = await tryDeleteFile(token, fileId)
+  if (!result.ok && result.status !== 404) {
+    throw new DriveError('Failed to delete file', result.status)
+  }
+}
 
-  if (!res.ok && res.status !== 404) {
-    throw new DriveError('Failed to delete file', res.status)
+export type TryDeleteResult = {
+  /** True if the file is gone or was deleted (including already 404). */
+  ok: boolean
+  status: number
+}
+
+/**
+ * Best-effort delete: never throws.
+ * Used for session cleanup under drive.file where mixed ownership can yield 403.
+ */
+export async function tryDeleteFile(token: string, fileId: string): Promise<TryDeleteResult> {
+  try {
+    const res = await fetch(`${DRIVE_API}/files/${fileId}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (res.ok || res.status === 204) {
+      return { ok: true, status: res.status || 204 }
+    }
+    // Already gone
+    if (res.status === 404) {
+      return { ok: true, status: 404 }
+    }
+    return { ok: false, status: res.status }
+  } catch (err) {
+    console.warn('[drive] tryDeleteFile network error:', fileId, err)
+    return { ok: false, status: 0 }
   }
 }
 

@@ -278,28 +278,130 @@ export async function downloadStemSession(
   }
 }
 
+export interface DeleteCloudSessionResult {
+  /** Manifest entry removed (or was already absent). */
+  manifestUpdated: boolean
+  /** True if Drive folder delete fully succeeded (or no folder id). */
+  folderDeleted: boolean
+  /** Human-readable warnings (e.g. 403 on some files). */
+  warnings: string[]
+}
+
+/**
+ * Best-effort delete of a session folder under drive.file scope.
+ * Lists children, deletes each (ignoring 403/404), then deletes the folder.
+ * Incomplete / mixed-ownership sessions often 403 on a blind folder DELETE;
+ * cleaning children first fixes many cases, and remaining 403s are ignored.
+ */
+async function deleteSessionFolderBestEffort(
+  token: string,
+  folderId: string,
+): Promise<{ folderDeleted: boolean; warnings: string[] }> {
+  const warnings: string[] = []
+
+  // 1) Delete children we can see
+  try {
+    const children = await drive.listFiles(
+      token,
+      `'${folderId}' in parents and trashed = false`,
+    )
+    for (const child of children) {
+      const r = await drive.tryDeleteFile(token, child.id)
+      if (!r.ok) {
+        const msg = `Could not delete "${child.name}" (${r.status})`
+        warnings.push(msg)
+        console.warn('[drive-sync]', msg, child.id)
+      }
+    }
+  } catch (err: any) {
+    // Listing can fail with 403 if the folder is inaccessible — still try folder delete
+    const msg = `Could not list session folder contents: ${err?.message || err}`
+    warnings.push(msg)
+    console.warn('[drive-sync]', msg)
+  }
+
+  // 2) Delete the folder itself
+  const folderResult = await drive.tryDeleteFile(token, folderId)
+  if (!folderResult.ok) {
+    const msg = `Could not delete session folder (${folderResult.status})`
+    warnings.push(msg)
+    console.warn('[drive-sync]', msg, folderId)
+    return { folderDeleted: false, warnings }
+  }
+
+  return { folderDeleted: true, warnings }
+}
+
 /**
  * Delete a session from the cloud.
+ *
+ * Always removes the session from weblooper's manifest when signed in, even if
+ * some Drive files cannot be deleted (403 under drive.file / broken sessions).
+ * Prefer a clean app list over zombie entries that reappear forever.
  */
-export async function deleteCloudSession(sessionId: string): Promise<void> {
-  if (!isSignedIn()) return
+export async function deleteCloudSession(sessionId: string): Promise<DeleteCloudSessionResult> {
+  const empty: DeleteCloudSessionResult = {
+    manifestUpdated: false,
+    folderDeleted: false,
+    warnings: [],
+  }
+
+  if (!isSignedIn()) return empty
+
+  const warnings: string[] = []
+  let folderDeleted = true
 
   try {
     const token = await getValidToken()
 
-    // Find the session in manifest
-    const session = manifestCache?.sessions.find(s => s.id === sessionId)
-    if (session?.driveFolderId) {
-      await drive.deleteFile(token, session.driveFolderId)
+    // Ensure we have a fresh manifest if cache is empty
+    if (!manifestCache) {
+      await fetchCloudSessions()
     }
 
-    // Update manifest
-    if (manifestCache) {
-      manifestCache.sessions = manifestCache.sessions.filter(s => s.id !== sessionId)
-      await saveManifest(token)
+    const session = manifestCache?.sessions.find(s => s.id === sessionId)
+    if (session?.driveFolderId) {
+      const result = await deleteSessionFolderBestEffort(token, session.driveFolderId)
+      folderDeleted = result.folderDeleted
+      warnings.push(...result.warnings)
     }
-  } catch (err) {
+
+    // ALWAYS drop from manifest so the session leaves the product UI
+    if (manifestCache) {
+      const before = manifestCache.sessions.length
+      manifestCache.sessions = manifestCache.sessions.filter(s => s.id !== sessionId)
+      if (manifestCache.sessions.length !== before) {
+        await saveManifest(token)
+      }
+    }
+
+    return {
+      manifestUpdated: true,
+      folderDeleted,
+      warnings,
+    }
+  } catch (err: any) {
     console.error('[drive-sync] Failed to delete cloud session:', err)
+    // Last resort: still try to drop from in-memory manifest + save
+    try {
+      if (manifestCache && isSignedIn()) {
+        const token = await getValidToken()
+        manifestCache.sessions = manifestCache.sessions.filter(s => s.id !== sessionId)
+        await saveManifest(token)
+        return {
+          manifestUpdated: true,
+          folderDeleted: false,
+          warnings: [...warnings, err?.message || String(err)],
+        }
+      }
+    } catch (err2) {
+      console.error('[drive-sync] Manifest cleanup also failed:', err2)
+    }
+    return {
+      manifestUpdated: false,
+      folderDeleted: false,
+      warnings: [...warnings, err?.message || String(err)],
+    }
   }
 }
 

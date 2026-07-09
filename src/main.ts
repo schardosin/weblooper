@@ -1700,9 +1700,16 @@ class WebLooper {
             newDelBtn.addEventListener('click', async () => {
               if (confirm(`Permanently delete "${sess.fileName || label}" from Google Drive?`)) {
                 const { deleteCloudSession } = await import('./drive')
-                await deleteCloudSession(sess.id)
-                row.remove()
-                if (listEl.children.length === 0) section.classList.add('hidden')
+                const result = await deleteCloudSession(sess.id)
+                if (result.manifestUpdated || result.folderDeleted) {
+                  row.remove()
+                  if (listEl.children.length === 0) section.classList.add('hidden')
+                  if (result.warnings.length > 0 && !result.folderDeleted) {
+                    console.warn('[weblooper] Session removed from list; some Drive files could not be deleted:', result.warnings)
+                  }
+                } else {
+                  alert('Could not remove this session from Drive. Check the console or try signing in again.')
+                }
               }
             })
 
@@ -1724,9 +1731,16 @@ class WebLooper {
             // Cloud only → confirm then delete from Drive
             if (confirm(`Permanently delete "${sess.fileName || label}" from Google Drive?`)) {
               const { deleteCloudSession } = await import('./drive')
-              await deleteCloudSession(sess.id)
-              row.remove()
-              if (listEl.children.length === 0) section.classList.add('hidden')
+              const result = await deleteCloudSession(sess.id)
+              if (result.manifestUpdated || result.folderDeleted) {
+                row.remove()
+                if (listEl.children.length === 0) section.classList.add('hidden')
+                if (result.warnings.length > 0 && !result.folderDeleted) {
+                  console.warn('[weblooper] Session removed from list; some Drive files could not be deleted:', result.warnings)
+                }
+              } else {
+                alert('Could not remove this session from Drive. Check the console or try signing in again.')
+              }
             }
           } else {
             // Local only → just delete, no confirm

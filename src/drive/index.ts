@@ -4,6 +4,7 @@ export {
   downloadStemSession,
   fetchCloudSessions,
   deleteCloudSession,
+  type DeleteCloudSessionResult,
   isSessionInCloud,
   updateCloudStemMeta,
   loadLyricTrackFromCloud,

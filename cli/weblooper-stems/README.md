@@ -17,10 +17,11 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 4. Paste the command the site gives you (or run a downloaded job file):
 
 ```bash
-uvx weblooper-stems@0.1.1 run '<payload-from-site>'
+uvx weblooper-stems@0.1.2 run '<payload-from-site>'
 # or
-uvx weblooper-stems@0.1.1 run ~/Downloads/weblooper-job-….json
+uvx weblooper-stems@0.1.2 run ~/Downloads/weblooper-job-….json
 ```
+
 
 
 5. Leave the weblooper tab open — it polls Drive and loads stems automatically.

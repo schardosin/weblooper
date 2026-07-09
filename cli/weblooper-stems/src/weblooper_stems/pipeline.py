@@ -37,49 +37,84 @@ def torch_device() -> str:
 
 
 def get_ffmpeg_exe() -> str:
-    """Prefer system ffmpeg; fall back to imageio-ffmpeg bundled binary."""
-    which = shutil.which("ffmpeg")
-    if which:
-        return which
+    """
+    Return path to an ffmpeg binary.
+
+    Prefer imageio-ffmpeg's bundled binary so uvx installs are self-contained
+    (no system ffmpeg/ffprobe required). Fall back to PATH if the package fails.
+    """
     try:
         import imageio_ffmpeg
 
-        return imageio_ffmpeg.get_ffmpeg_exe()
-    except Exception as exc:
+        exe = imageio_ffmpeg.get_ffmpeg_exe()
+        if exe and Path(exe).is_file():
+            return exe
+    except Exception:
+        pass
+
+    which = shutil.which("ffmpeg")
+    if which:
+        return which
+
+    raise RuntimeError(
+        "ffmpeg not found. imageio-ffmpeg should provide a bundled binary via uvx; "
+        "reinstall the CLI env or install ffmpeg on PATH."
+    )
+
+
+def _convert_to_wav(src: Path, wav_path: Path, ffmpeg: str) -> None:
+    """Convert any audio container to WAV using the given ffmpeg binary."""
+    cmd = [
+        ffmpeg,
+        "-y",
+        "-i",
+        str(src),
+        "-vn",
+        "-acodec",
+        "pcm_s16le",
+        str(wav_path),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0 or not wav_path.is_file():
+        tail = (result.stderr or result.stdout or "")[-500:]
         raise RuntimeError(
-            "ffmpeg not found. Install ffmpeg or rely on imageio-ffmpeg "
-            f"(bundled with this package). Details: {exc}"
-        ) from exc
+            f"ffmpeg failed converting {src.name} → WAV.\n"
+            f"Binary: {ffmpeg}\n"
+            f"{tail}"
+        )
 
 
 def download_youtube_audio(youtube_url: str, out_dir: Path) -> tuple[Path, str, float]:
     """
-    Download best audio as WAV via yt-dlp.
-    Returns (wav_path, title, duration_sec).
+    Download best audio with yt-dlp, then convert to WAV with bundled ffmpeg.
+
+    We intentionally do NOT use yt-dlp's FFmpegExtractAudio postprocessor:
+    imageio-ffmpeg ships a binary not named "ffmpeg", and does not ship ffprobe.
+    Passing its parent directory as ffmpeg_location fails on Windows (and any
+    machine without system ffmpeg). Converting ourselves is fully self-contained.
     """
     import yt_dlp
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    # yt-dlp will write audio.<ext> then extract to audio.wav
+    ffmpeg = get_ffmpeg_exe()
+    print(f"Using ffmpeg: {ffmpeg}")
+
+    # Clean previous outputs
+    for old in out_dir.glob("audio.*"):
+        try:
+            old.unlink()
+        except OSError:
+            pass
+
     outtmpl = str(out_dir / "audio.%(ext)s")
     wav_path = out_dir / "audio.wav"
-    if wav_path.exists():
-        wav_path.unlink()
 
     ydl_opts = {
         "format": "bestaudio/best",
         "outtmpl": outtmpl,
-        "postprocessors": [
-            {
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "wav",
-                "preferredquality": "0",
-            }
-        ],
         "quiet": False,
         "no_warnings": True,
-        # Help ffmpeg discovery when using bundled binary
-        "ffmpeg_location": str(Path(get_ffmpeg_exe()).parent),
+        # No FFmpeg postprocessors — avoid ffprobe / name mismatch issues
     }
 
     print(f"Downloading audio from: {youtube_url}")
@@ -88,12 +123,31 @@ def download_youtube_audio(youtube_url: str, out_dir: Path) -> tuple[Path, str, 
         title = (info or {}).get("title") or "Unknown"
         duration = float((info or {}).get("duration") or 0)
 
-    if not wav_path.exists():
-        # Some yt-dlp versions may leave a different name
-        candidates = list(out_dir.glob("audio.*"))
-        raise FileNotFoundError(
-            f"Download failed — expected {wav_path}. Found: {[c.name for c in candidates]}"
-        )
+    # Locate downloaded file (webm, m4a, opus, …)
+    candidates = sorted(
+        (p for p in out_dir.glob("audio.*") if p.suffix.lower() != ".part"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if not candidates:
+        raise FileNotFoundError(f"Download failed — no audio.* in {out_dir}")
+
+    downloaded = candidates[0]
+    if downloaded.resolve() == wav_path.resolve() and downloaded.suffix.lower() == ".wav":
+        # Already wav (rare)
+        pass
+    else:
+        print(f"Converting {downloaded.name} → audio.wav …")
+        _convert_to_wav(downloaded, wav_path, ffmpeg)
+        # Drop intermediate container to save disk
+        if downloaded != wav_path:
+            try:
+                downloaded.unlink()
+            except OSError:
+                pass
+
+    if not wav_path.is_file():
+        raise FileNotFoundError(f"WAV not created at {wav_path}")
 
     size_mb = wav_path.stat().st_size / (1024 * 1024)
     print(f"Title: {title}")

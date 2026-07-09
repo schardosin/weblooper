@@ -162,61 +162,13 @@ export function formatUvxCommand(
   return ` ${core} '${payload}'`
 }
 
-/** Path hint for a downloaded job file on the given OS. */
-export function jobFilePathHint(fileName: string, os: HostOs = detectHostOs()): string {
-  if (
-    fileName.includes('/') ||
-    fileName.includes('\\') ||
-    fileName.startsWith('~') ||
-    fileName.startsWith('$')
-  ) {
-    return fileName
-  }
-  if (os === 'windows') {
-    return `$env:USERPROFILE\\Downloads\\${fileName}`
-  }
-  return `~/Downloads/${fileName}`
-}
-
-/** Command when the user downloaded a job JSON file. */
-export function formatUvxJobFileCommand(
-  fileName: string,
-  os: HostOs = detectHostOs(),
-): string {
-  const path = jobFilePathHint(fileName, os)
-  const core = `${uvxFromPrefix()} run ${path}`
-  return os === 'windows' ? core : ` ${core}`
-}
-
-export function jobFileName(sessionId: string): string {
-  const short = sessionId.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 24) || 'job'
-  return `weblooper-job-${short}.json`
-}
-
-/** Trigger a browser download of the job JSON (token stays out of argv when using file mode). */
-export function downloadJobFile(job: LocalCliJobPayload): string {
-  const name = jobFileName(job.sessionId)
-  const blob = new Blob([JSON.stringify(job, null, 2)], { type: 'application/json' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = name
-  a.rel = 'noopener'
-  document.body.appendChild(a)
-  a.click()
-  a.remove()
-  setTimeout(() => URL.revokeObjectURL(url), 2_000)
-  return name
-}
-
-/** Copy for the local-CLI modal: steps, notes, primary CTA preference. */
+/** Copy for the local-CLI modal (one-liner only). */
 export function getLocalCliUiCopy(os: HostOs = detectHostOs()): {
   os: HostOs
   osLabel: string
   installCommand: string
   installShell: string
   runShell: string
-  preferJobFile: boolean
   commandHint: string
   footerNote: string
 } {
@@ -228,9 +180,8 @@ export function getLocalCliUiCopy(os: HostOs = detectHostOs()): {
       installCommand: getUvInstallCommand('windows'),
       installShell: 'PowerShell',
       runShell: 'PowerShell',
-      preferJobFile: true,
       commandHint:
-        'Use PowerShell (not cmd.exe). Prefer “Download job file” if the one-liner is awkward. After installing uv, open a new terminal. Requires Git for Windows on PATH until the package is on PyPI. Token expires in ~1 hour.',
+        'Use PowerShell (not cmd.exe). After installing uv, open a new terminal. Requires Git for Windows on PATH until the package is on PyPI. Token expires in ~1 hour.',
       footerNote:
         'Isolated install via uvx — only host tool needed is uv. First run downloads PyTorch + Demucs (large). Windows uses CPU by default (CUDA is optional/advanced).',
     }
@@ -242,7 +193,6 @@ export function getLocalCliUiCopy(os: HostOs = detectHostOs()): {
       installCommand: getUvInstallCommand('macos'),
       installShell: 'Terminal',
       runShell: 'Terminal',
-      preferJobFile: false,
       commandHint:
         'Leading space helps keep the token out of shell history when HISTCONTROL=ignorespace is set. Token expires in ~1 hour. Git is required for the git+ install source.',
       footerNote:
@@ -256,7 +206,6 @@ export function getLocalCliUiCopy(os: HostOs = detectHostOs()): {
     installCommand: getUvInstallCommand('linux'),
     installShell: 'Terminal',
     runShell: 'Terminal',
-    preferJobFile: false,
     commandHint:
       'Leading space helps keep the token out of shell history when HISTCONTROL=ignorespace is set. Token expires in ~1 hour. Git is required for the git+ install source.',
     footerNote:

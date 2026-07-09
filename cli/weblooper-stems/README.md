@@ -14,12 +14,10 @@ Runs on **your computer**: downloads YouTube audio with `yt-dlp`, separates 6 st
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-4. Paste the command the site gives you (or run a downloaded job file):
+4. Paste the one-liner the site gives you:
 
 ```bash
 uvx weblooper-stems@0.1.2 run '<payload-from-site>'
-# or
-uvx weblooper-stems@0.1.2 run ~/Downloads/weblooper-job-….json
 ```
 
 

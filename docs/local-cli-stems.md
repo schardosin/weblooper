@@ -40,8 +40,7 @@ Then open a **new** PowerShell window.
 
 ### Windows notes
 
-- Prefer **Download job file** + PowerShell (not `cmd.exe`).
-- Job path style: `$env:USERPROFILE\Downloads\weblooper-job-….json`
+- Use **PowerShell** (not `cmd.exe`) for the one-liner.
 - GPU: **CPU by default**; CUDA needs a CUDA-enabled torch install (advanced).
 - Current `git+https` install source needs **Git for Windows** on PATH until the package is published to PyPI.
 
@@ -54,13 +53,12 @@ Then open a **new** PowerShell window.
 
 The site uses Google `drive.file` scope and pre-creates empty stem placeholders so it can still **read** files after an external process fills them.
 
-A separate CLI OAuth client cannot update those placeholders under `drive.file`. So the **website remains SSO**; the job payload carries the current access token (~1 hour). The CLI never opens a second Google login.
+A separate CLI OAuth client cannot update those placeholders under `drive.file`. So the **website remains SSO**; the job payload is embedded in the one-liner (access token ~1 hour). The CLI never opens a second Google login.
 
 Mitigations:
 
 - Leading space on the command for `HISTCONTROL=ignorespace` (Unix)
-- Optional **Download job file** so the token is not always in argv (preferred on Windows)
-- Clear expiry errors asking for a fresh command
+- Short-lived token; clear expiry errors asking for a fresh command
 
 ## Package
 
@@ -90,14 +88,8 @@ Bump version in:
 ```bash
 cd cli/weblooper-stems
 uv sync
-# After creating a job from the site (Download job file):
-uv run weblooper-stems run ~/Downloads/weblooper-job-….json
-```
-
-Or point `uvx` at the local path:
-
-```bash
-uvx --from ./cli/weblooper-stems weblooper-stems run ./job.json
+# Paste the site one-liner, or for local dev:
+uvx --from ./cli/weblooper-stems weblooper-stems run '<payload-from-site>'
 ```
 
 ## Related code

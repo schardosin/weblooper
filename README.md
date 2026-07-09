@@ -64,7 +64,7 @@ powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | ie
 ```
 
 2. On weblooper: sign in with Google → load a video → **Separate Stems** → **On this computer**
-3. Follow the OS-specific panel (copy command, or on Windows prefer **Download job file**)
+3. Click **Copy command**, paste it in Terminal / PowerShell, and run it
 4. Leave the tab open — when the CLI finishes, stems appear automatically
 
 The CLI package lives in [`cli/weblooper-stems`](cli/weblooper-stems). See [`docs/local-cli-stems.md`](docs/local-cli-stems.md) for details.
